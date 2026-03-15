@@ -513,6 +513,13 @@ function bindSidebarEvents() {
         (s) => s.email === state.selectedSubmissionId,
       );
       if (sel?.appliedFeedback.some((af) => af.itemId === id)) renderDetail();
+    } else if (state.selectedSubmissionIds.size > 1) {
+      const anyAffected = [...state.selectedSubmissionIds].some((email) =>
+        p.submissions
+          .find((s) => s.email === email)
+          ?.appliedFeedback.some((af) => af.itemId === id),
+      );
+      if (anyAffected) renderDetail();
     }
   });
 
