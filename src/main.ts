@@ -711,15 +711,15 @@ function selectAffectedSubmissions(itemId: string) {
     .filter((s) => s.appliedFeedback.some((af) => af.itemId === itemId))
     .map((s) => s.email);
   if (affected.length === 0) return;
-  state.selectedSubmissionIds = new Set(affected);
-  state.selectedSubmissionId = null;
+  // Single result → single-select; multiple → multi-select
+  state.selectedSubmissionIds = new Set(affected.length > 1 ? affected : []);
+  state.selectedSubmissionId = affected.length === 1 ? affected[0] : null;
   state.lastClickedId = affected[affected.length - 1];
-  // Sync row selection classes
   document.querySelectorAll<HTMLElement>(".sub-row").forEach((r) => {
-    r.classList.toggle(
-      "row-selected",
-      state.selectedSubmissionIds.has(r.dataset.email!),
-    );
+    const em = r.dataset.email!;
+    const sel =
+      state.selectedSubmissionIds.has(em) || state.selectedSubmissionId === em;
+    r.classList.toggle("row-selected", sel);
   });
   renderDetail();
 }
@@ -1058,6 +1058,11 @@ function bindTableEvents() {
 function renderDetail() {
   if (state.selectedSubmissionIds.size > 1) {
     renderGroupDetail();
+  } else if (state.selectedSubmissionIds.size === 1) {
+    // Collapsed multi-select — treat as single
+    state.selectedSubmissionId = [...state.selectedSubmissionIds][0];
+    state.selectedSubmissionIds.clear();
+    renderSingleDetail();
   } else {
     renderSingleDetail();
   }
