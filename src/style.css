@@ -299,6 +299,14 @@ body {
     flex-shrink: 0;
 }
 
+.fi-dragging {
+    opacity: 0.4;
+}
+.fi-drag-over {
+    outline: 2px solid var(--accent);
+    background: var(--accent-soft);
+}
+
 .fi-drag {
     cursor: grab;
     color: var(--text-dim);
@@ -313,17 +321,9 @@ body {
     cursor: grabbing;
 }
 
-.fi-dragging {
-    opacity: 0.4;
-}
-.fi-drag-over {
+.row-drop-target {
+    background: var(--accent-soft) !important;
     outline: 1px dashed var(--accent);
-    background: var(--accent-soft);
-}
-
-/* During reorder drag, disable pointer events on all li children so dragover reaches the li */
-.fi-list-reordering .feedback-item * {
-    pointer-events: none;
 }
 
 .fi-count-btn {
@@ -602,15 +602,6 @@ html.dark .ls-notice {
 /* Prevent text selection highlight on click/shift-click in table */
 .sub-table tbody tr {
     user-select: none;
-}
-
-/* Drag-to-apply: table feedback drop targets */
-.table-drop-active .sub-row {
-    cursor: copy;
-}
-.row-drop-target {
-    background: var(--accent-soft) !important;
-    outline: 1px dashed var(--accent);
 }
 
 /* Row states */

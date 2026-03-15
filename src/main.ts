@@ -112,9 +112,6 @@ window.addEventListener("beforeunload", (e) => {
 
 // ─── Render orchestration ────────────────────────────────────────────────────
 
-// Module-level drag state — must persist across renderSidebar() re-renders
-let dragReorderId: string | null = null;
-
 function render() {
   renderSidebar();
   renderTable();
@@ -286,8 +283,8 @@ function renderFeedbackItem(item: FeedbackItem): string {
       s.appliedFeedback.some((af) => af.itemId === item.id),
     ).length ?? 0;
   return `
-    <li class="feedback-item" data-id="${item.id}">
-      <span class="fi-drag" data-id="${item.id}" title="Drag to reorder">⠿</span>
+    <li class="feedback-item" data-id="${item.id}" draggable="true">
+      <span class="fi-drag" title="Drag to reorder">⠿</span>
       <input type="number" class="pts-input fi-pts" value="${item.points}" step="0.5" data-id="${item.id}" />
       <textarea class="fi-label" data-id="${item.id}" placeholder="Feedback text" rows="1">${esc(item.label)}</textarea>
       <button class="fi-count-btn ${affectedCount > 0 ? "has-count" : ""}" data-id="${item.id}" title="Select affected submissions">${affectedCount || ""}</button>
@@ -596,98 +593,31 @@ function bindSidebarEvents() {
     }
   });
 
-  // ── Drag-to-reorder and drag-to-apply ──
-  // Dynamically set draggable on mousedown to avoid conflicts with textarea/input
-  // native behavior (text selection, number spinning). Only non-input targets
-  // within the li can initiate a drag.
-  list?.addEventListener("mousedown", (e) => {
-    const target = e.target as HTMLElement;
-    const li = target.closest<HTMLElement>("li[data-id]");
-    if (!li) return;
-    const isInput = target.tagName === "INPUT" || target.tagName === "TEXTAREA";
-    if (isInput) {
-      li.removeAttribute("draggable");
-    } else {
-      li.setAttribute("draggable", "true");
-    }
-  });
-
+  // Apply-drag: dragging a feedback item onto a table row applies it.
+  // dragstart sets 'text/feedback-id' so the table drop handler can identify it.
   list?.addEventListener("dragstart", (e) => {
-    const li = (e.target as HTMLElement).closest<HTMLElement>("li[data-id]");
+    const li = (e.target as HTMLElement).closest<HTMLElement>(
+      "li.feedback-item[data-id]",
+    );
     if (!li) return;
-    const id = li.dataset.id!;
-    const fromHandle = (e.target as HTMLElement).classList.contains("fi-drag");
-
-    if (fromHandle) {
-      // Reorder mode
-      dragReorderId = id;
-      e.dataTransfer!.setData("text/reorder-id", id);
-      e.dataTransfer!.effectAllowed = "move";
-      li.classList.add("fi-dragging");
-      list.classList.add("fi-list-reordering"); // disables pointer events on children via CSS
-    } else {
-      // Apply mode: drag onto a table row to apply this feedback
-      dragReorderId = null;
-      e.dataTransfer!.setData("text/feedback-id", id);
-      e.dataTransfer!.effectAllowed = "copy";
-      li.classList.add("fi-dragging");
-      // Signal table that a feedback drop is in flight
-      document
-        .getElementById("table-container")
-        ?.classList.add("table-drop-active");
-    }
+    // Reorder is handled by initReorderDrag when dragging from the handle
+    if (reorderHandleActive) return;
+    e.dataTransfer!.setData("text/feedback-id", li.dataset.id!);
+    e.dataTransfer!.effectAllowed = "copy";
+    document
+      .getElementById("table-container")
+      ?.classList.add("table-drop-active");
   });
 
-  list?.addEventListener("dragend", (e) => {
-    const li = (e.target as HTMLElement).closest<HTMLElement>("li[data-id]");
-    if (li) li.removeAttribute("draggable");
-    list
-      .querySelectorAll(".fi-dragging")
-      .forEach((el) => el.classList.remove("fi-dragging"));
-    list
-      .querySelectorAll(".fi-drag-over")
-      .forEach((el) => el.classList.remove("fi-drag-over"));
-    list.classList.remove("fi-list-reordering");
+  list?.addEventListener("dragend", () => {
     document
       .getElementById("table-container")
       ?.classList.remove("table-drop-active");
     document
       .querySelectorAll(".row-drop-target")
       .forEach((el) => el.classList.remove("row-drop-target"));
-    dragReorderId = null;
   });
 
-  list?.addEventListener("dragover", (e) => {
-    // Only handle reorder within list — use the module flag, not dataTransfer.types
-    // (types is unreliable during dragover in Firefox)
-    if (!dragReorderId) return;
-    e.preventDefault();
-    e.dataTransfer!.dropEffect = "move";
-    const li = (e.target as HTMLElement).closest<HTMLElement>("li[data-id]");
-    if (!li || li.dataset.id === dragReorderId) return;
-    list
-      .querySelectorAll(".fi-drag-over")
-      .forEach((el) => el.classList.remove("fi-drag-over"));
-    li.classList.add("fi-drag-over");
-  });
-
-  list?.addEventListener("drop", (e) => {
-    if (!dragReorderId) return;
-    e.preventDefault();
-    const li = (e.target as HTMLElement).closest<HTMLElement>("li[data-id]");
-    if (!li || !dragReorderId || li.dataset.id === dragReorderId) return;
-    const targetId = li.dataset.id!;
-    const fromIdx = p.feedbackItems.findIndex((f) => f.id === dragReorderId);
-    const toIdx = p.feedbackItems.findIndex((f) => f.id === targetId);
-    if (fromIdx < 0 || toIdx < 0) return;
-    const [moved] = p.feedbackItems.splice(fromIdx, 1);
-    p.feedbackItems.splice(toIdx, 0, moved);
-    markDirty();
-    renderSidebar();
-    renderDetail();
-  });
-
-  // Table rows as drop targets for apply-feedback drags
   const tableContainer = document.getElementById("table-container")!;
 
   tableContainer.addEventListener("dragover", (e) => {
@@ -702,7 +632,6 @@ function bindSidebarEvents() {
   });
 
   tableContainer.addEventListener("dragleave", (e) => {
-    // Only clear if leaving the table container entirely
     if (!tableContainer.contains(e.relatedTarget as Node)) {
       document
         .querySelectorAll(".row-drop-target")
@@ -725,15 +654,12 @@ function bindSidebarEvents() {
     const email = row.dataset.email!;
     const item = p.feedbackItems.find((f) => f.id === itemId);
     if (!item?.label.trim()) return;
-
-    // If the drop target is part of a multi-selection, apply to all selected
     const isMultiTarget =
       state.selectedSubmissionIds.size > 1 &&
       state.selectedSubmissionIds.has(email);
     const targets = isMultiTarget
       ? p.submissions.filter((s) => state.selectedSubmissionIds.has(s.email))
       : [p.submissions.find((s) => s.email === email)!].filter(Boolean);
-
     for (const sub of targets) applyFeedbackItem(sub, itemId, p);
     renderDetail();
   });
@@ -1795,6 +1721,112 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
   </div>
 `;
 
+// ─── Reorder drag (persistent — outside renderSidebar) ───────────────────────
+
+let reorderHandleActive = false; // true when mousedown was on the ⠿ handle
+
+function initReorderDrag() {
+  const sidebar = document.getElementById("sidebar")!;
+  let draggingId: string | null = null;
+  let dragOverId: string | null = null;
+
+  // Track whether the drag started from the handle
+  sidebar.addEventListener("mousedown", (e) => {
+    reorderHandleActive = (e.target as HTMLElement).classList.contains(
+      "fi-drag",
+    );
+  });
+
+  sidebar.addEventListener("dragstart", (e) => {
+    const target = e.target as HTMLElement;
+    const li = target.closest<HTMLElement>("li.feedback-item[data-id]");
+    console.log(
+      "[reorder dragstart] target:",
+      target.tagName,
+      target.className,
+      "| reorderHandleActive:",
+      reorderHandleActive,
+      "| li found:",
+      !!li,
+    );
+    if (!li || !reorderHandleActive) return;
+    draggingId = li.dataset.id!;
+    e.dataTransfer!.effectAllowed = "move";
+    e.dataTransfer!.setData("text/plain", draggingId);
+    console.log("[reorder dragstart] draggingId set:", draggingId);
+    setTimeout(() => li.classList.add("fi-dragging"), 0);
+  });
+
+  sidebar.addEventListener("dragend", () => {
+    console.log("[reorder dragend] draggingId was:", draggingId);
+    draggingId = null;
+    dragOverId = null;
+    sidebar
+      .querySelectorAll(".fi-drag-over")
+      .forEach((el) => el.classList.remove("fi-drag-over"));
+    sidebar
+      .querySelectorAll(".fi-dragging")
+      .forEach((el) => el.classList.remove("fi-dragging"));
+  });
+
+  sidebar.addEventListener("dragover", (e) => {
+    if (!draggingId) return;
+    const li = (e.target as HTMLElement).closest<HTMLElement>(
+      "li.feedback-item[data-id]",
+    );
+    if (!li || li.dataset.id === draggingId) return;
+    console.log("[reorder dragover] over:", li.dataset.id);
+    e.preventDefault();
+    e.dataTransfer!.dropEffect = "move";
+    if (li.dataset.id !== dragOverId) {
+      sidebar
+        .querySelectorAll(".fi-drag-over")
+        .forEach((el) => el.classList.remove("fi-drag-over"));
+      li.classList.add("fi-drag-over");
+      dragOverId = li.dataset.id!;
+    }
+  });
+
+  sidebar.addEventListener("dragleave", (e) => {
+    const li = (e.target as HTMLElement).closest<HTMLElement>(
+      "li.feedback-item[data-id]",
+    );
+    if (li && !li.contains(e.relatedTarget as Node)) {
+      li.classList.remove("fi-drag-over");
+      if (dragOverId === li.dataset.id) dragOverId = null;
+    }
+  });
+
+  sidebar.addEventListener("drop", (e) => {
+    console.log(
+      "[reorder drop] draggingId:",
+      draggingId,
+      "| target:",
+      (e.target as HTMLElement).tagName,
+      (e.target as HTMLElement).className,
+    );
+    if (!draggingId) return;
+    const li = (e.target as HTMLElement).closest<HTMLElement>(
+      "li.feedback-item[data-id]",
+    );
+    console.log("[reorder drop] li found:", !!li, "| li.id:", li?.dataset.id);
+    if (!li || li.dataset.id === draggingId) return;
+    e.preventDefault();
+    const p = state.project;
+    if (!p) return;
+    const fromIdx = p.feedbackItems.findIndex((f) => f.id === draggingId);
+    const toIdx = p.feedbackItems.findIndex((f) => f.id === li.dataset.id);
+    if (fromIdx < 0 || toIdx < 0) return;
+    const [moved] = p.feedbackItems.splice(fromIdx, 1);
+    p.feedbackItems.splice(toIdx, 0, moved);
+    draggingId = null;
+    dragOverId = null;
+    markDirty();
+    renderSidebar();
+    renderDetail();
+  });
+}
+
 // ─── Resize handles ───────────────────────────────────────────────────────────
 
 function initResizeHandles() {
@@ -1886,5 +1918,6 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
+initReorderDrag();
 initResizeHandles();
 render();
