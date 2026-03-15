@@ -56,27 +56,48 @@ body {
 /* ── Layout ── */
 #layout {
     display: grid;
-    grid-template-columns: var(--sidebar-w) 1fr var(--detail-w);
+    grid-template-columns: var(--sidebar-w) 4px 1fr 4px var(--detail-w);
     height: 100vh;
 }
 
 #sidebar {
     background: var(--surface);
-    border-right: 1px solid var(--border);
+    border-right: none;
     display: flex;
     flex-direction: column;
     overflow: hidden;
+    grid-column: 1;
+}
+
+.resize-handle {
+    background: var(--border);
+    cursor: col-resize;
+    transition: background 0.15s;
+    z-index: 10;
+    grid-row: 1;
+}
+#resize-left {
+    grid-column: 2;
+}
+#resize-right {
+    grid-column: 4;
+}
+.resize-handle:hover,
+.resize-handle:active {
+    background: var(--accent);
 }
 
 #main {
     overflow: auto;
     background: var(--bg);
+    grid-column: 3;
 }
 
 #detail-panel {
     background: var(--surface);
-    border-left: 1px solid var(--border);
+    border-left: none;
     overflow-y: auto;
+    grid-column: 5;
 }
 
 /* ── Sidebar top ── */

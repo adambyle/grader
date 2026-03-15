@@ -559,7 +559,7 @@ function renderRow(sub: Submission, p: Project): string {
   const isSelected = sub.email === state.selectedSubmissionId;
   const { cls, label } = rowStatus(sub, p);
   const graded = isGraded(sub);
-  const summary = graded ? buildFeedbackSummary(sub, p) : "";
+  const summary = buildFeedbackSummary(sub, p);
 
   return `<tr class="sub-row ${isSelected ? "row-selected" : ""} ${!graded ? "row-ungraded" : ""}"
       data-email="${esc(sub.email)}">
@@ -574,6 +574,17 @@ function renderRow(sub: Submission, p: Project): string {
 // One-line plain-text summary of feedback for the table cell
 function buildFeedbackSummary(sub: Submission, p: Project): string {
   const parts: string[] = [];
+
+  // Missing with no feedback applied
+  if (
+    sub.isMissing &&
+    sub.appliedFeedback.length === 0 &&
+    sub.adHocFeedback.length === 0 &&
+    sub.manualGradeOverride === undefined
+  ) {
+    return p.autoTexts.missing;
+  }
+
   for (const af of sub.appliedFeedback) {
     const item = p.feedbackItems.find((f) => f.id === af.itemId);
     if (!item) continue;
@@ -584,6 +595,17 @@ function buildFeedbackSummary(sub: Submission, p: Project): string {
   for (const ah of sub.adHocFeedback) {
     if (ah.label) parts.push(ah.label);
   }
+
+  // Perfect: override at max with no other feedback
+  const grade = computeGrade(sub, p);
+  if (
+    parts.length === 0 &&
+    grade >= sub.maxGrade &&
+    sub.manualGradeOverride !== undefined
+  ) {
+    return p.autoTexts.perfect;
+  }
+
   return parts.join("; ");
 }
 
@@ -973,8 +995,7 @@ function updateRow(sub: Submission, p: Project) {
   if (gradeCell)
     gradeCell.innerHTML = `<span class="grade-num">${fmtGrade(grade)}</span><span class="grade-max"> / ${sub.maxGrade}</span>`;
   const summaryCell = row.querySelector(".summary-text");
-  if (summaryCell)
-    summaryCell.textContent = isGraded(sub) ? buildFeedbackSummary(sub, p) : "";
+  if (summaryCell) summaryCell.textContent = buildFeedbackSummary(sub, p);
   const { cls, label } = rowStatus(sub, p);
   const badge = row.querySelector(".st-badge");
   if (badge) {
@@ -999,11 +1020,84 @@ function esc(str: string): string {
 document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
   <div id="layout">
     <aside id="sidebar"></aside>
+    <div class="resize-handle" id="resize-left" title="Drag to resize"></div>
     <main id="main">
       <div id="table-container"></div>
     </main>
+    <div class="resize-handle" id="resize-right" title="Drag to resize"></div>
     <section id="detail-panel"></section>
   </div>
 `;
 
+// ─── Resize handles ───────────────────────────────────────────────────────────
+
+function initResizeHandles() {
+  function makeDragger(
+    handleId: string,
+    cssVar: string,
+    side: "left" | "right",
+  ) {
+    const handle = document.getElementById(handleId)!;
+    let startX = 0;
+    let startVal = 0;
+
+    handle.addEventListener("mousedown", (e) => {
+      startX = e.clientX;
+      const raw = getComputedStyle(document.documentElement)
+        .getPropertyValue(cssVar)
+        .trim();
+      startVal = parseInt(raw) || (side === "left" ? 282 : 318);
+      document.body.style.cursor = "col-resize";
+      document.body.style.userSelect = "none";
+
+      function onMove(e: MouseEvent) {
+        // Left handle: drag right → sidebar grows. Right handle: drag left → detail grows.
+        const delta = side === "left" ? e.clientX - startX : startX - e.clientX;
+        const next = Math.max(200, Math.min(520, startVal + delta));
+        document.documentElement.style.setProperty(cssVar, next + "px");
+      }
+
+      function onUp() {
+        document.body.style.cursor = "";
+        document.body.style.userSelect = "";
+        window.removeEventListener("mousemove", onMove);
+        window.removeEventListener("mouseup", onUp);
+        // Persist sizes
+        localStorage.setItem(
+          "grader_" + cssVar.slice(2),
+          String(
+            parseInt(
+              getComputedStyle(document.documentElement).getPropertyValue(
+                cssVar,
+              ),
+            ),
+          ),
+        );
+      }
+
+      window.addEventListener("mousemove", onMove);
+      window.addEventListener("mouseup", onUp);
+      e.preventDefault();
+    });
+  }
+
+  makeDragger("resize-left", "--sidebar-w", "left");
+  makeDragger("resize-right", "--detail-w", "right");
+
+  // Restore persisted sizes
+  const savedSidebar = localStorage.getItem("grader_sidebar-w");
+  const savedDetail = localStorage.getItem("grader_detail-w");
+  if (savedSidebar)
+    document.documentElement.style.setProperty(
+      "--sidebar-w",
+      savedSidebar + "px",
+    );
+  if (savedDetail)
+    document.documentElement.style.setProperty(
+      "--detail-w",
+      savedDetail + "px",
+    );
+}
+
+initResizeHandles();
 render();
