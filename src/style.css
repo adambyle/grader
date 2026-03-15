@@ -621,8 +621,11 @@ html.dark .ls-notice {
     background: var(--accent-soft) !important;
 }
 .row-ungraded td.cell-name {
-    border-left: 2px solid var(--text-dim);
+    border-left: 3px solid #818cf8;
     padding-left: 8px;
+}
+html.dark .row-ungraded td.cell-name {
+    border-left-color: #6366f1;
 }
 
 /* Status badges */

@@ -1131,6 +1131,9 @@ function bindGroupDetailEvents(subs: Submission[], p: Project) {
   document
     .getElementById("btn-group-perfect")
     ?.addEventListener("click", () => {
+      const affectedItemIds = new Set(
+        subs.flatMap((s) => s.appliedFeedback.map((af) => af.itemId)),
+      );
       for (const sub of subs) {
         sub.appliedFeedback = [];
         sub.adHocFeedback = [];
@@ -1140,11 +1143,15 @@ function bindGroupDetailEvents(subs: Submission[], p: Project) {
         sub.markedPerfect = true;
         updateRow(sub, p);
       }
+      affectedItemIds.forEach((id) => updateFeedbackCountBadge(id));
       markDirty();
       renderGroupDetail();
     });
 
   document.getElementById("btn-group-clear")?.addEventListener("click", () => {
+    const affectedItemIds = new Set(
+      subs.flatMap((s) => s.appliedFeedback.map((af) => af.itemId)),
+    );
     for (const sub of subs) {
       sub.appliedFeedback = [];
       sub.adHocFeedback = [];
@@ -1152,6 +1159,7 @@ function bindGroupDetailEvents(subs: Submission[], p: Project) {
       sub.markedPerfect = false;
       updateRow(sub, p);
     }
+    affectedItemIds.forEach((id) => updateFeedbackCountBadge(id));
     markDirty();
     renderGroupDetail();
   });
