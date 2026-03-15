@@ -659,17 +659,19 @@ function bindSidebarEvents() {
     const row = (e.target as HTMLElement).closest<HTMLElement>(".sub-row");
     if (!row) return;
     const email = row.dataset.email!;
-    const sub = p.submissions.find((s) => s.email === email);
-    if (!sub) return;
     const item = p.feedbackItems.find((f) => f.id === itemId);
     if (!item?.label.trim()) return;
-    applyFeedbackItem(sub, itemId, p);
-    if (
-      state.selectedSubmissionId === email ||
-      state.selectedSubmissionIds.has(email)
-    ) {
-      renderDetail();
-    }
+
+    // If the drop target is part of a multi-selection, apply to all selected
+    const isMultiTarget =
+      state.selectedSubmissionIds.size > 1 &&
+      state.selectedSubmissionIds.has(email);
+    const targets = isMultiTarget
+      ? p.submissions.filter((s) => state.selectedSubmissionIds.has(s.email))
+      : [p.submissions.find((s) => s.email === email)!].filter(Boolean);
+
+    for (const sub of targets) applyFeedbackItem(sub, itemId, p);
+    renderDetail();
   });
 }
 
