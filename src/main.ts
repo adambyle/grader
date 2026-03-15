@@ -445,6 +445,21 @@ function bindSidebarEvents() {
     }
   });
 
+  // When a feedback item gains a label and focus leaves it, refresh the detail panel
+  // so the group panel (and single panel) picks up the newly visible item.
+  list?.addEventListener("focusout", (e) => {
+    const target = e.target as HTMLElement;
+    if (!target.classList.contains("fi-label")) return;
+    const id = target.dataset.id;
+    if (!id) return;
+    const item = p.feedbackItems.find((f) => f.id === id);
+    if (!item || !item.label.trim()) return; // empty items handled by blur-to-delete below
+    const related = (e as FocusEvent).relatedTarget as HTMLElement | null;
+    if (related?.dataset.id === id) return; // focus staying within same item
+    // Refresh detail so newly labelled items appear in applied feedback lists
+    renderDetail();
+  });
+
   // Blur on an empty label: silently remove the item.
   // We use a mousedown flag to reliably detect clicks into the detail panel,
   // since relatedTarget can be null for checkboxes in some browsers.
