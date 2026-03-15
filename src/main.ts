@@ -356,6 +356,12 @@ function bindSidebarEvents() {
     markDirty();
     updateFeedbackCountBadge(id);
     highlightTableRows();
+    // Update every row that has this item applied
+    for (const sub of p.submissions) {
+      if (sub.appliedFeedback.some((af) => af.itemId === id)) {
+        updateRow(sub, p);
+      }
+    }
     if (state.selectedSubmissionId) {
       const sel = p.submissions.find(
         (s) => s.email === state.selectedSubmissionId,
