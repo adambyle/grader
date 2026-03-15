@@ -600,10 +600,8 @@ function bindSidebarEvents() {
       "li.feedback-item[data-id]",
     );
     if (!li) return;
-    // Reorder is handled by initReorderDrag when dragging from the handle
-    if (reorderHandleActive) return;
     e.dataTransfer!.setData("text/feedback-id", li.dataset.id!);
-    e.dataTransfer!.effectAllowed = "copy";
+    e.dataTransfer!.effectAllowed = "all";
     document
       .getElementById("table-container")
       ?.classList.add("table-drop-active");
@@ -1723,42 +1721,23 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
 
 // ─── Reorder drag (persistent — outside renderSidebar) ───────────────────────
 
-let reorderHandleActive = false; // true when mousedown was on the ⠿ handle
-
 function initReorderDrag() {
   const sidebar = document.getElementById("sidebar")!;
   let draggingId: string | null = null;
   let dragOverId: string | null = null;
 
-  // Track whether the drag started from the handle
-  sidebar.addEventListener("mousedown", (e) => {
-    reorderHandleActive = (e.target as HTMLElement).classList.contains(
-      "fi-drag",
-    );
-  });
-
   sidebar.addEventListener("dragstart", (e) => {
-    const target = e.target as HTMLElement;
-    const li = target.closest<HTMLElement>("li.feedback-item[data-id]");
-    console.log(
-      "[reorder dragstart] target:",
-      target.tagName,
-      target.className,
-      "| reorderHandleActive:",
-      reorderHandleActive,
-      "| li found:",
-      !!li,
+    const li = (e.target as HTMLElement).closest<HTMLElement>(
+      "li.feedback-item[data-id]",
     );
-    if (!li || !reorderHandleActive) return;
+    if (!li) return;
     draggingId = li.dataset.id!;
-    e.dataTransfer!.effectAllowed = "move";
+    e.dataTransfer!.effectAllowed = "all";
     e.dataTransfer!.setData("text/plain", draggingId);
-    console.log("[reorder dragstart] draggingId set:", draggingId);
     setTimeout(() => li.classList.add("fi-dragging"), 0);
   });
 
   sidebar.addEventListener("dragend", () => {
-    console.log("[reorder dragend] draggingId was:", draggingId);
     draggingId = null;
     dragOverId = null;
     sidebar
@@ -1775,7 +1754,6 @@ function initReorderDrag() {
       "li.feedback-item[data-id]",
     );
     if (!li || li.dataset.id === draggingId) return;
-    console.log("[reorder dragover] over:", li.dataset.id);
     e.preventDefault();
     e.dataTransfer!.dropEffect = "move";
     if (li.dataset.id !== dragOverId) {
@@ -1798,18 +1776,10 @@ function initReorderDrag() {
   });
 
   sidebar.addEventListener("drop", (e) => {
-    console.log(
-      "[reorder drop] draggingId:",
-      draggingId,
-      "| target:",
-      (e.target as HTMLElement).tagName,
-      (e.target as HTMLElement).className,
-    );
     if (!draggingId) return;
     const li = (e.target as HTMLElement).closest<HTMLElement>(
       "li.feedback-item[data-id]",
     );
-    console.log("[reorder drop] li found:", !!li, "| li.id:", li?.dataset.id);
     if (!li || li.dataset.id === draggingId) return;
     e.preventDefault();
     const p = state.project;
