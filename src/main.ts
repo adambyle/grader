@@ -1247,6 +1247,7 @@ function bindGroupDetailEvents(subs: Submission[], p: Project) {
 
 function renderSingleDetail() {
   const el = document.getElementById("detail-panel")!;
+  const savedScroll = el.scrollTop; // preserve scroll before innerHTML replacement
   const p = state.project;
   if (!p || !state.selectedSubmissionId) {
     el.innerHTML = `<div class="detail-empty">Select a submission to grade it.</div>`;
@@ -1353,6 +1354,7 @@ function renderSingleDetail() {
 
   bindDetailEvents(sub, p);
   autoResizeTextareas(el);
+  el.scrollTop = savedScroll;
 }
 
 function renderDetailFI(item: FeedbackItem, sub: Submission): string {

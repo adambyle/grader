@@ -724,8 +724,6 @@ html.dark .row-ungraded td.cell-name {
 .detail-fi-list {
     list-style: none;
     padding: 2px 8px 4px;
-    max-height: 240px;
-    overflow-y: auto;
 }
 
 .dfi {
