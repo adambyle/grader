@@ -16,7 +16,7 @@ Click *Import CSV* and select the Moodle grade export file. The app reads studen
 
 **2. Define reusable feedback**
 
-Use the left panel to create feedback items — things you'll apply to multiple students, like "waterBehavior: silent row-wrapping" or "missing sandBehavior call." Each item has a point value (negative for deductions, positive for bonuses) and a text description.
+Use the left panel to create feedback items — things you'll apply to multiple students, like "improper formatting" or "missing step 4". Each item has a point value (negative for deductions, positive for bonuses) and a text description.
 
 Drag items by the ⠿ handle to reorder them. Drag an item directly onto a row in the student table to apply it to that student without opening their detail pane.
 
