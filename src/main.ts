@@ -470,14 +470,17 @@ function bindSidebarEvents() {
   // so the group panel (and single panel) picks up the newly visible item.
   list?.addEventListener("focusout", (e) => {
     const target = e.target as HTMLElement;
-    if (!target.classList.contains("fi-label")) return;
+    if (
+      !target.classList.contains("fi-label") &&
+      !target.classList.contains("fi-pts")
+    )
+      return;
     const id = target.dataset.id;
     if (!id) return;
     const item = p.feedbackItems.find((f) => f.id === id);
     if (!item || !item.label.trim()) return; // empty items handled by blur-to-delete below
     const related = (e as FocusEvent).relatedTarget as HTMLElement | null;
     if (related?.dataset.id === id) return; // focus staying within same item
-    // Refresh detail so newly labelled items appear in applied feedback lists
     renderDetail();
   });
 
@@ -1180,6 +1183,21 @@ function bindGroupDetailEvents(subs: Submission[], p: Project) {
     });
 
   const fiList = document.getElementById("group-fi-list");
+  fiList?.addEventListener("click", (e) => {
+    const t = e.target as HTMLElement;
+    if (
+      t.classList.contains("gfi-check") ||
+      t.tagName === "INPUT" ||
+      t.tagName === "BUTTON"
+    )
+      return;
+    const li = t.closest<HTMLElement>("li.dfi[data-id]");
+    if (!li) return;
+    const cb = li.querySelector<HTMLInputElement>(".gfi-check");
+    if (!cb) return;
+    cb.checked = !cb.checked;
+    cb.dispatchEvent(new Event("change", { bubbles: true }));
+  });
   fiList?.addEventListener("change", (e) => {
     const t = e.target as HTMLInputElement;
     if (!t.classList.contains("gfi-check")) return;
@@ -1350,9 +1368,9 @@ function renderDetailFI(item: FeedbackItem, sub: Submission): string {
   return `<li class="dfi ${applied ? "dfi-applied" : ""}" data-id="${item.id}">
     <input type="checkbox" class="dfi-check" data-id="${item.id}" ${applied ? "checked" : ""} />
     <input type="number" class="pts-input dfi-pts" data-id="${item.id}"
-      value="${pts}" step="0.5" ${!applied ? "disabled" : ""} />
+      value="${pts}" step="0.5" ${!applied ? 'tabindex="-1"' : ""} />
     <textarea class="dfi-lbl" data-id="${item.id}"
-      ${!applied ? "disabled" : ""} placeholder="text" rows="1">${esc(label)}</textarea>
+      ${!applied ? 'tabindex="-1"' : ""} placeholder="text" rows="1">${esc(label)}</textarea>
     ${hasOverride ? `<button class="btn-icon dfi-revert" data-id="${item.id}" title="Revert to global">↺</button>` : ""}
   </li>`;
 }
@@ -1463,6 +1481,25 @@ function bindDetailEvents(sub: Submission, p: Project) {
 
   // Feedback items list
   const fiList = document.getElementById("detail-fi-list");
+  fiList?.addEventListener("mousedown", (e) => {
+    const t = e.target as HTMLElement;
+    // Let the checkbox, active inputs, and buttons handle themselves
+    if (
+      t.classList.contains("dfi-check") ||
+      t.classList.contains("dfi-revert") ||
+      t.tagName === "BUTTON" ||
+      t.tagName === "INPUT" ||
+      t.tagName === "TEXTAREA"
+    )
+      return;
+    const li = t.closest<HTMLElement>("li.dfi[data-id]");
+    if (!li) return;
+    const cb = li.querySelector<HTMLInputElement>(".dfi-check");
+    if (!cb) return;
+    e.preventDefault();
+    cb.checked = !cb.checked;
+    cb.dispatchEvent(new Event("change", { bubbles: true }));
+  });
   fiList?.addEventListener("change", (e) => {
     const t = e.target as HTMLInputElement;
     if (!t.classList.contains("dfi-check")) return;

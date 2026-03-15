@@ -258,13 +258,11 @@ export function buildFeedbackComment(
         af.pointsOverride !== undefined ? af.pointsOverride : item.points;
       const label =
         af.labelOverride !== undefined ? af.labelOverride : item.label;
-      const ptsStr = pts === 0 ? "0" : pts.toString();
-      parts.push(`${ptsStr}: ${label}`);
+      parts.push(pts === 0 ? label : `${pts}: ${label}`);
     }
     for (const ah of sub.adHocFeedback) {
       if (!ah.label.trim()) continue;
-      const ptsStr = ah.points === 0 ? "0" : ah.points.toString();
-      parts.push(`${ptsStr}: ${ah.label}`);
+      parts.push(ah.points === 0 ? ah.label : `${ah.points}: ${ah.label}`);
     }
     // Late penalty entry
     const latePts = computeLatePenalty(sub, project);
@@ -274,12 +272,12 @@ export function buildFeedbackComment(
     }
     // Perfect auto-text: only when explicitly marked
     if (sub.markedPerfect && parts.length === 0) {
-      parts.push(`0: ${project.autoTexts.perfect}`);
+      parts.push(project.autoTexts.perfect);
     }
   }
 
   if (parts.length === 0) return "";
-  return "'" + parts.join("; ");
+  return parts.join("; ");
 }
 
 export function exportCSV(project: Project): string {

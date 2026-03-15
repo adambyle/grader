@@ -735,6 +735,7 @@ html.dark .row-ungraded td.cell-name {
     padding: 2px 4px;
     border-radius: 3px;
     margin-bottom: 2px;
+    cursor: pointer;
 }
 .dfi:hover {
     background: var(--bg);
@@ -782,6 +783,11 @@ html.dark .row-ungraded td.cell-name {
 }
 .dfi-pts:disabled {
     opacity: 0.4;
+}
+.dfi:not(.dfi-applied) .dfi-pts,
+.dfi:not(.dfi-applied) .dfi-lbl {
+    pointer-events: none;
+    opacity: 0.45;
 }
 
 /* Align dfi controls to top when label wraps */
