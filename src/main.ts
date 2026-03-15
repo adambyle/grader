@@ -112,6 +112,9 @@ window.addEventListener("beforeunload", (e) => {
 
 // ─── Render orchestration ────────────────────────────────────────────────────
 
+// Module-level drag state — must persist across renderSidebar() re-renders
+let dragReorderId: string | null = null;
+
 function render() {
   renderSidebar();
   renderTable();
@@ -218,10 +221,15 @@ function renderSidebar() {
           <input type="number" id="lp-max" class="pts-input" value="${p.latePolicy.maxPenalty}" min="0" step="0.5" title="Maximum penalty (0 = no cap)" />
           <span class="lp-unit">pts cap</span>
         </div>
+        ${
+          p.submissions.some((s) => s.submissionDate)
+            ? `
         <div class="at-row">
           <span class="at-label">Deadline</span>
           <input type="date" id="lp-deadline" class="flex-input" value="${p.latePolicy.deadline}" />
         </div>`
+            : ""
+        }`
             : ""
         }
       </div>
@@ -278,7 +286,7 @@ function renderFeedbackItem(item: FeedbackItem): string {
       s.appliedFeedback.some((af) => af.itemId === item.id),
     ).length ?? 0;
   return `
-    <li class="feedback-item" data-id="${item.id}" draggable="true">
+    <li class="feedback-item" data-id="${item.id}">
       <span class="fi-drag" data-id="${item.id}" title="Drag to reorder">⠿</span>
       <input type="number" class="pts-input fi-pts" value="${item.points}" step="0.5" data-id="${item.id}" />
       <textarea class="fi-label" data-id="${item.id}" placeholder="Feedback text" rows="1">${esc(item.label)}</textarea>
@@ -366,6 +374,11 @@ function bindSidebarEvents() {
       p.latePolicy.type = (e.target as HTMLSelectElement)
         .value as LatePolicyType;
       markDirty();
+      // Changing policy type can activate/deactivate a penalty — clear perfect on affected subs
+      for (const sub of p.submissions) {
+        if (sub.markedPerfect && computeLatePenalty(sub, p) !== 0)
+          clearPerfect(sub);
+      }
       renderSidebar();
       renderTable();
       if (state.selectedSubmissionId) renderDetail();
@@ -376,6 +389,10 @@ function bindSidebarEvents() {
     (e) => {
       p.latePolicy.amount =
         parseFloat((e.target as HTMLInputElement).value) || 0;
+      for (const sub of p.submissions) {
+        if (sub.markedPerfect && computeLatePenalty(sub, p) !== 0)
+          clearPerfect(sub);
+      }
       markDirty();
       renderTable();
       if (state.selectedSubmissionId) renderDetail();
@@ -386,6 +403,10 @@ function bindSidebarEvents() {
     (e) => {
       p.latePolicy.maxPenalty =
         parseFloat((e.target as HTMLInputElement).value) || 0;
+      for (const sub of p.submissions) {
+        if (sub.markedPerfect && computeLatePenalty(sub, p) !== 0)
+          clearPerfect(sub);
+      }
       markDirty();
       renderTable();
       if (state.selectedSubmissionId) renderDetail();
@@ -395,14 +416,17 @@ function bindSidebarEvents() {
     document.getElementById("lp-deadline") as HTMLInputElement
   )?.addEventListener("input", (e) => {
     p.latePolicy.deadline = (e.target as HTMLInputElement).value;
-    // Recompute daysLate for all submissions with a parsed date
+    // Recompute daysLate for all submissions with a parsed date, unless manually overridden
     for (const sub of p.submissions) {
-      if (sub.submissionDate && p.latePolicy.deadline) {
+      if (sub.submissionDate && p.latePolicy.deadline && !sub.daysLateManual) {
         const deadline = new Date(p.latePolicy.deadline);
         deadline.setHours(23, 59, 59, 999);
         const diffMs = sub.submissionDate.getTime() - deadline.getTime();
         sub.daysLate = diffMs > 0 ? Math.ceil(diffMs / 86400000) : 0;
       }
+      // Clear perfect if the updated deadline makes this submission late
+      if (sub.markedPerfect && computeLatePenalty(sub, p) !== 0)
+        clearPerfect(sub);
     }
     markDirty();
     renderTable();
@@ -573,7 +597,20 @@ function bindSidebarEvents() {
   });
 
   // ── Drag-to-reorder and drag-to-apply ──
-  let dragReorderId: string | null = null;
+  // Dynamically set draggable on mousedown to avoid conflicts with textarea/input
+  // native behavior (text selection, number spinning). Only non-input targets
+  // within the li can initiate a drag.
+  list?.addEventListener("mousedown", (e) => {
+    const target = e.target as HTMLElement;
+    const li = target.closest<HTMLElement>("li[data-id]");
+    if (!li) return;
+    const isInput = target.tagName === "INPUT" || target.tagName === "TEXTAREA";
+    if (isInput) {
+      li.removeAttribute("draggable");
+    } else {
+      li.setAttribute("draggable", "true");
+    }
+  });
 
   list?.addEventListener("dragstart", (e) => {
     const li = (e.target as HTMLElement).closest<HTMLElement>("li[data-id]");
@@ -587,6 +624,7 @@ function bindSidebarEvents() {
       e.dataTransfer!.setData("text/reorder-id", id);
       e.dataTransfer!.effectAllowed = "move";
       li.classList.add("fi-dragging");
+      list.classList.add("fi-list-reordering"); // disables pointer events on children via CSS
     } else {
       // Apply mode: drag onto a table row to apply this feedback
       dragReorderId = null;
@@ -600,13 +638,16 @@ function bindSidebarEvents() {
     }
   });
 
-  list?.addEventListener("dragend", () => {
+  list?.addEventListener("dragend", (e) => {
+    const li = (e.target as HTMLElement).closest<HTMLElement>("li[data-id]");
+    if (li) li.removeAttribute("draggable");
     list
       .querySelectorAll(".fi-dragging")
       .forEach((el) => el.classList.remove("fi-dragging"));
     list
       .querySelectorAll(".fi-drag-over")
       .forEach((el) => el.classList.remove("fi-drag-over"));
+    list.classList.remove("fi-list-reordering");
     document
       .getElementById("table-container")
       ?.classList.remove("table-drop-active");
@@ -617,8 +658,9 @@ function bindSidebarEvents() {
   });
 
   list?.addEventListener("dragover", (e) => {
-    // Only handle reorder within list
-    if (!e.dataTransfer!.types.includes("text/reorder-id")) return;
+    // Only handle reorder within list — use the module flag, not dataTransfer.types
+    // (types is unreliable during dragover in Firefox)
+    if (!dragReorderId) return;
     e.preventDefault();
     e.dataTransfer!.dropEffect = "move";
     const li = (e.target as HTMLElement).closest<HTMLElement>("li[data-id]");
@@ -630,7 +672,7 @@ function bindSidebarEvents() {
   });
 
   list?.addEventListener("drop", (e) => {
-    if (!e.dataTransfer!.types.includes("text/reorder-id")) return;
+    if (!dragReorderId) return;
     e.preventDefault();
     const li = (e.target as HTMLElement).closest<HTMLElement>("li[data-id]");
     if (!li || !dragReorderId || li.dataset.id === dragReorderId) return;
@@ -856,9 +898,7 @@ function renderTable() {
 
   const subs = sortedSubmissions();
   const hasAnyDate = subs.some((s) => s.submissionDate);
-  const hasLatePolicy = p.latePolicy.type !== "none";
-  const hasAnyDaysLate = subs.some((s) => (s.daysLate ?? 0) > 0);
-  const showDateCol = hasAnyDate || hasLatePolicy || hasAnyDaysLate;
+  const showDateCol = hasAnyDate; // only show when we have real parsed dates
 
   const arrow = (key: string) =>
     state.sortKey === key
@@ -874,7 +914,6 @@ function renderTable() {
           <th class="col-grade">Grade</th>
           ${showDateCol ? `<th class="col-date">Submitted</th>` : ""}
           <th class="col-summary">Feedback</th>
-          <th class="col-status">Done</th>
         </tr>
       </thead>
       <tbody>
@@ -906,20 +945,11 @@ function isGraded(sub: Submission, p?: Project): boolean {
   return false;
 }
 
-function rowStatus(
-  sub: Submission,
-  p: Project,
-): { cls: string; label: string } {
-  if (isGraded(sub, p)) return { cls: "st-done", label: "✓" };
-  return { cls: "st-todo", label: "·" };
-}
-
 function renderRow(sub: Submission, p: Project, showDate = false): string {
   const grade = computeGrade(sub, p);
   const isSelectedSingle = sub.email === state.selectedSubmissionId;
   const isSelectedMulti = state.selectedSubmissionIds.has(sub.email);
   const isSelected = isSelectedSingle || isSelectedMulti;
-  const { cls, label } = rowStatus(sub, p);
   const graded = isGraded(sub, p);
   const summary = buildFeedbackSummary(sub, p);
   const daysLate = sub.daysLate ?? 0;
@@ -947,7 +977,6 @@ function renderRow(sub: Submission, p: Project, showDate = false): string {
     <td class="cell-grade"><span class="grade-num">${fmtGrade(grade)}</span><span class="grade-max"> / ${sub.maxGrade}</span></td>
     ${dateCell}
     <td class="cell-summary"><span class="summary-text">${esc(summary)}</span></td>
-    <td class="cell-status"><span class="st-badge ${cls}">${label}</span></td>
   </tr>`;
 }
 
@@ -1109,6 +1138,31 @@ function renderGroupDetail() {
       </div>
     </div>
 
+    ${
+      p.latePolicy.type !== "none"
+        ? (() => {
+            // Only show when none of the selected subs have auto-computed dates
+            // (i.e. all are manual-entry candidates)
+            const anyHasDate = subs.some(
+              (s) => s.submissionDate && !s.daysLateManual,
+            );
+            const daysValues = subs.map((s) => s.daysLate ?? 0);
+            const allSame = daysValues.every((d) => d === daysValues[0]);
+            return `
+      <div class="detail-section">
+        <div class="detail-sub">Late penalty</div>
+        <div class="late-controls">
+          <label class="late-days-label">Days late:</label>
+          <input type="number" id="group-days-late" class="pts-input"
+            value="${allSame ? daysValues[0] : ""}"
+            placeholder="${allSame ? "" : "mixed"}" min="0" step="1" />
+          ${anyHasDate ? `<button class="btn-icon" id="btn-group-reset-days" title="Reset all to computed values">↺</button>` : ""}
+        </div>
+      </div>`;
+          })()
+        : ""
+    }
+
     <div class="detail-section">
       <div class="detail-sub">
         Apply feedback
@@ -1184,6 +1238,9 @@ function bindGroupDetailEvents(subs: Submission[], p: Project) {
       sub.adHocFeedback = [];
       delete sub.manualGradeOverride;
       sub.markedPerfect = false;
+      sub.daysLate = 0;
+      sub.daysLateManual = false;
+      sub.latePenaltyWaived = false;
       updateRow(sub, p);
     }
     affectedItemIds.forEach((id) => updateFeedbackCountBadge(id));
@@ -1210,6 +1267,40 @@ function bindGroupDetailEvents(subs: Submission[], p: Project) {
     }
     renderGroupDetail();
   });
+
+  // Group days-late
+  (
+    document.getElementById("group-days-late") as HTMLInputElement
+  )?.addEventListener("input", (e) => {
+    const val = parseInt((e.target as HTMLInputElement).value);
+    if (isNaN(val)) return;
+    for (const sub of subs) {
+      clearPerfect(sub);
+      sub.daysLate = val;
+      sub.daysLateManual = true;
+      updateRow(sub, p);
+    }
+    markDirty();
+  });
+
+  document
+    .getElementById("btn-group-reset-days")
+    ?.addEventListener("click", () => {
+      for (const sub of subs) {
+        if (sub.submissionDate && p.latePolicy.deadline) {
+          const deadline = new Date(p.latePolicy.deadline);
+          deadline.setHours(23, 59, 59, 999);
+          const diffMs = sub.submissionDate.getTime() - deadline.getTime();
+          sub.daysLate = diffMs > 0 ? Math.ceil(diffMs / 86400000) : 0;
+        } else {
+          sub.daysLate = 0;
+        }
+        sub.daysLateManual = false;
+        updateRow(sub, p);
+      }
+      markDirty();
+      renderGroupDetail();
+    });
 }
 
 function renderSingleDetail() {
@@ -1271,7 +1362,12 @@ function renderSingleDetail() {
             : ""
         }
         <label class="late-days-label">Days late:</label>
-        <input type="number" id="days-late" class="pts-input" value="${sub.daysLate ?? 0}" min="0" step="1" ${hasDate ? "disabled" : ""} />
+        <input type="number" id="days-late" class="pts-input" value="${sub.daysLate ?? 0}" min="0" step="1" />
+        ${
+          hasDate && sub.daysLateManual
+            ? `<button class="btn-icon" id="btn-reset-days-late" title="Revert to computed value">↺</button>`
+            : ""
+        }
         ${latePts !== 0 ? `<span class="late-penalty-amt">${fmtPts(latePts)}</span>` : '<span class="late-penalty-amt late-none">on time</span>'}
         <label class="inline-check late-waive">
           <input type="checkbox" id="waive-late" ${sub.latePenaltyWaived ? "checked" : ""} /> waive
@@ -1356,25 +1452,38 @@ function bindDetailEvents(sub: Submission, p: Project) {
     renderDetail();
   });
 
-  // Days-late manual input (only active when no parsed date)
+  // Days-late input — always editable; marks as manual override when changed
   (document.getElementById("days-late") as HTMLInputElement)?.addEventListener(
     "input",
     (e) => {
       clearPerfect(sub);
       sub.daysLate = parseInt((e.target as HTMLInputElement).value) || 0;
+      sub.daysLateManual = true;
       markDirty();
       refreshGrade(sub, p);
       updateRow(sub, p);
       refreshPreview(sub, p);
-      // Update penalty display
-      const amt = document.querySelector(".late-penalty-amt");
-      if (amt) {
-        const pts = computeLatePenalty(sub, p);
-        amt.textContent = pts !== 0 ? fmtPts(pts) : "on time";
-        amt.className = `late-penalty-amt${pts === 0 ? " late-none" : ""}`;
-      }
+      renderDetail(); // re-render to show ↺ button and update perfect button state
     },
   );
+
+  // Reset days-late to auto-computed value from submission date vs deadline
+  document
+    .getElementById("btn-reset-days-late")
+    ?.addEventListener("click", () => {
+      if (sub.submissionDate && p.latePolicy.deadline) {
+        const deadline = new Date(p.latePolicy.deadline);
+        deadline.setHours(23, 59, 59, 999);
+        const diffMs = sub.submissionDate.getTime() - deadline.getTime();
+        sub.daysLate = diffMs > 0 ? Math.ceil(diffMs / 86400000) : 0;
+      } else {
+        sub.daysLate = 0;
+      }
+      sub.daysLateManual = false;
+      markDirty();
+      renderDetail();
+      updateRow(sub, p);
+    });
 
   (document.getElementById("waive-late") as HTMLInputElement)?.addEventListener(
     "change",
@@ -1651,12 +1760,6 @@ function updateRow(sub: Submission, p: Project) {
     gradeCell.innerHTML = `<span class="grade-num">${fmtGrade(grade)}</span><span class="grade-max"> / ${sub.maxGrade}</span>`;
   const summaryCell = row.querySelector(".summary-text");
   if (summaryCell) summaryCell.textContent = buildFeedbackSummary(sub, p);
-  const { cls, label } = rowStatus(sub, p);
-  const badge = row.querySelector(".st-badge");
-  if (badge) {
-    badge.className = `st-badge ${cls}`;
-    badge.textContent = label;
-  }
   row.classList.toggle("row-ungraded", !isGraded(sub, p));
   const isSelected =
     sub.email === state.selectedSubmissionId ||

@@ -43,7 +43,8 @@ export interface Submission {
   adHocFeedback: AdHocEntry[];
   manualGradeOverride?: number; // if set, bypasses computed grade
   isMissing: boolean;
-  daysLate?: number; // manually entered or computed from submissionDate
+  daysLate?: number; // computed from submissionDate vs deadline, or manually set
+  daysLateManual?: boolean; // true when grader has overridden the computed value
   latePenaltyWaived?: boolean; // grader can waive the late penalty
   markedPerfect?: boolean; // set by the Perfect button, cleared when any feedback is applied
 }

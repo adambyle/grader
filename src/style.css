@@ -321,6 +321,11 @@ body {
     background: var(--accent-soft);
 }
 
+/* During reorder drag, disable pointer events on all li children so dragover reaches the li */
+.fi-list-reordering .feedback-item * {
+    pointer-events: none;
+}
+
 .fi-count-btn {
     font-size: 10px;
     min-width: 18px;
@@ -526,10 +531,6 @@ html.dark .ls-notice {
 .col-summary {
     /* takes remaining space */
 }
-.col-status {
-    width: 44px;
-    text-align: center;
-}
 
 .sortable {
     cursor: pointer;
@@ -598,10 +599,6 @@ html.dark .ls-notice {
     white-space: nowrap;
 }
 
-.cell-status {
-    text-align: center;
-}
-
 /* Prevent text selection highlight on click/shift-click in table */
 .sub-table tbody tr {
     user-select: none;
@@ -626,20 +623,6 @@ html.dark .ls-notice {
 }
 html.dark .row-ungraded td.cell-name {
     border-left-color: #6366f1;
-}
-
-/* Status badges */
-.st-badge {
-    font-size: 11px;
-    display: inline-block;
-    line-height: 1.4;
-}
-.st-done {
-    color: var(--green);
-    font-weight: 600;
-}
-.st-todo {
-    color: var(--text-dim);
 }
 
 /* ── Detail panel ── */
