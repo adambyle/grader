@@ -1406,6 +1406,13 @@ function bindDetailEvents(sub: Submission, p: Project) {
     updateRow(sub, p);
   });
 
+  fiList?.addEventListener("keydown", (e) => {
+    const t = e.target as HTMLElement;
+    if (e.key !== "Enter" || !t.classList.contains("dfi-lbl")) return;
+    e.preventDefault();
+    (t as HTMLTextAreaElement).blur();
+  });
+
   fiList?.addEventListener("input", (e) => {
     const t = e.target as HTMLInputElement;
     const id = t.dataset.id;
