@@ -16,6 +16,19 @@ export interface AdHocEntry {
   points: number;
 }
 
+export type LatePolicyType =
+  | "none"
+  | "percent-per-day"
+  | "flat-per-day"
+  | "zero-if-late";
+
+export interface LatePolicy {
+  type: LatePolicyType;
+  amount: number; // % or flat points per day (ignored for zero-if-late/none)
+  maxPenalty: number; // cap on total deduction (0 = no cap)
+  deadline: string; // ISO date string, e.g. "2025-03-10"
+}
+
 export interface Submission {
   // From CSV (preserved for export)
   identifier: string;
@@ -29,7 +42,10 @@ export interface Submission {
   appliedFeedback: AppliedFeedback[];
   adHocFeedback: AdHocEntry[];
   manualGradeOverride?: number; // if set, bypasses computed grade
-  isMissing: boolean; // no submission date and status indicates missing
+  isMissing: boolean;
+  daysLate?: number; // manually entered or computed from submissionDate
+  latePenaltyWaived?: boolean; // grader can waive the late penalty
+  markedPerfect?: boolean; // set by the Perfect button, cleared when any feedback is applied
 }
 
 export interface AutoTexts {
@@ -44,15 +60,17 @@ export interface Project {
   submissions: Submission[];
   autoTexts: AutoTexts;
   capAtMax: boolean;
+  latePolicy: LatePolicy;
 }
 
-export type SortKey = 'name' | 'email';
-export type SortDir = 'asc' | 'desc';
+export type SortKey = "name" | "email";
+export type SortDir = "asc" | "desc";
 
 export interface AppState {
   project: Project | null;
-  selectedSubmissionId: string | null; // email as id
-  highlightedItemId: string | null;
+  selectedSubmissionId: string | null; // single-select (email)
+  selectedSubmissionIds: Set<string>; // multi-select (emails)
+  lastClickedId: string | null; // for shift-click range
   sortKey: SortKey;
   sortDir: SortDir;
   dirty: boolean;

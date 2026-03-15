@@ -5,8 +5,15 @@ import type {
   Project,
   Submission,
   AdHocEntry,
+  LatePolicyType,
 } from "./types";
-import { importCSV, exportCSV, computeGrade } from "./csv";
+import {
+  importCSV,
+  exportCSV,
+  computeGrade,
+  computeLatePenalty,
+  lateFeedbackLabel,
+} from "./csv";
 import {
   saveToLocalStorage,
   loadFromLocalStorage,
@@ -40,7 +47,8 @@ initDarkMode();
 const state: AppState = {
   project: null,
   selectedSubmissionId: null,
-  highlightedItemId: null,
+  selectedSubmissionIds: new Set(),
+  lastClickedId: null,
   sortKey: "name",
   sortDir: "asc",
   dirty: false,
@@ -58,6 +66,12 @@ function defaultProject(): Project {
       perfect: "Great work!",
     },
     capAtMax: true,
+    latePolicy: {
+      type: "none",
+      amount: 10,
+      maxPenalty: 0,
+      deadline: "",
+    },
   };
 }
 
@@ -116,7 +130,15 @@ function autoResizeTextareas(root: HTMLElement = document.body) {
     });
 }
 
-// ─── Sidebar ─────────────────────────────────────────────────────────────────
+// JSON round-trips serialize Dates as strings — restore them after any load
+function rehydrateDates(project: Project) {
+  for (const sub of project.submissions) {
+    if (sub.submissionDate && !(sub.submissionDate instanceof Date)) {
+      const d = new Date(sub.submissionDate as unknown as string);
+      sub.submissionDate = isNaN(d.getTime()) ? undefined : d;
+    }
+  }
+}
 
 function renderSidebar() {
   const el = document.getElementById("sidebar")!;
@@ -166,6 +188,45 @@ function renderSidebar() {
       </div>
     </div>
 
+    <div class="sidebar-section">
+      <div class="section-header">Late policy</div>
+      <div class="late-policy-block">
+        <div class="at-row">
+          <span class="at-label">Type</span>
+          <select id="lp-type" class="lp-select">
+            <option value="none" ${p.latePolicy.type === "none" ? "selected" : ""}>None</option>
+            <option value="percent-per-day" ${p.latePolicy.type === "percent-per-day" ? "selected" : ""}>% per day</option>
+            <option value="flat-per-day" ${p.latePolicy.type === "flat-per-day" ? "selected" : ""}>Points per day</option>
+            <option value="zero-if-late" ${p.latePolicy.type === "zero-if-late" ? "selected" : ""}>Zero if late</option>
+          </select>
+        </div>
+        ${
+          p.latePolicy.type !== "none" && p.latePolicy.type !== "zero-if-late"
+            ? `
+        <div class="at-row">
+          <span class="at-label">Amount</span>
+          <input type="number" id="lp-amount" class="pts-input" value="${p.latePolicy.amount}" min="0" step="0.5" />
+          <span class="lp-unit">${p.latePolicy.type === "percent-per-day" ? "% / day" : "pts / day"}</span>
+        </div>`
+            : ""
+        }
+        ${
+          p.latePolicy.type !== "none"
+            ? `
+        <div class="at-row">
+          <span class="at-label">Max</span>
+          <input type="number" id="lp-max" class="pts-input" value="${p.latePolicy.maxPenalty}" min="0" step="0.5" title="Maximum penalty (0 = no cap)" />
+          <span class="lp-unit">pts cap</span>
+        </div>
+        <div class="at-row">
+          <span class="at-label">Deadline</span>
+          <input type="date" id="lp-deadline" class="flex-input" value="${p.latePolicy.deadline}" />
+        </div>`
+            : ""
+        }
+      </div>
+    </div>
+
     <div class="sidebar-section feedback-section">
       <div class="section-header">
         Reusable feedback
@@ -200,6 +261,7 @@ function renderSidebar() {
         )
           return;
         state.project = saved;
+        rehydrateDates(saved);
         state.dirty = false;
         render();
       });
@@ -211,16 +273,16 @@ function renderSidebar() {
 }
 
 function renderFeedbackItem(item: FeedbackItem): string {
-  const isHighlighted = state.highlightedItemId === item.id;
   const affectedCount =
     state.project?.submissions.filter((s) =>
       s.appliedFeedback.some((af) => af.itemId === item.id),
     ).length ?? 0;
   return `
-    <li class="feedback-item ${isHighlighted ? "fi-highlighted" : ""}" data-id="${item.id}">
+    <li class="feedback-item" data-id="${item.id}" draggable="true">
+      <span class="fi-drag" data-id="${item.id}" title="Drag to reorder">⠿</span>
       <input type="number" class="pts-input fi-pts" value="${item.points}" step="0.5" data-id="${item.id}" />
       <textarea class="fi-label" data-id="${item.id}" placeholder="Feedback text" rows="1">${esc(item.label)}</textarea>
-      <button class="fi-count-btn ${affectedCount > 0 ? "has-count" : ""}" data-id="${item.id}" title="Highlight affected submissions">${affectedCount || ""}</button>
+      <button class="fi-count-btn ${affectedCount > 0 ? "has-count" : ""}" data-id="${item.id}" title="Select affected submissions">${affectedCount || ""}</button>
       <button class="btn-icon fi-delete" data-id="${item.id}">×</button>
     </li>
   `;
@@ -285,6 +347,56 @@ function bindSidebarEvents() {
     markDirty();
   });
 
+  // Late policy
+  (document.getElementById("lp-type") as HTMLSelectElement)?.addEventListener(
+    "change",
+    (e) => {
+      p.latePolicy.type = (e.target as HTMLSelectElement)
+        .value as LatePolicyType;
+      markDirty();
+      renderSidebar();
+      renderTable();
+      if (state.selectedSubmissionId) renderDetail();
+    },
+  );
+  (document.getElementById("lp-amount") as HTMLInputElement)?.addEventListener(
+    "input",
+    (e) => {
+      p.latePolicy.amount =
+        parseFloat((e.target as HTMLInputElement).value) || 0;
+      markDirty();
+      renderTable();
+      if (state.selectedSubmissionId) renderDetail();
+    },
+  );
+  (document.getElementById("lp-max") as HTMLInputElement)?.addEventListener(
+    "input",
+    (e) => {
+      p.latePolicy.maxPenalty =
+        parseFloat((e.target as HTMLInputElement).value) || 0;
+      markDirty();
+      renderTable();
+      if (state.selectedSubmissionId) renderDetail();
+    },
+  );
+  (
+    document.getElementById("lp-deadline") as HTMLInputElement
+  )?.addEventListener("input", (e) => {
+    p.latePolicy.deadline = (e.target as HTMLInputElement).value;
+    // Recompute daysLate for all submissions with a parsed date
+    for (const sub of p.submissions) {
+      if (sub.submissionDate && p.latePolicy.deadline) {
+        const deadline = new Date(p.latePolicy.deadline);
+        deadline.setHours(23, 59, 59, 999);
+        const diffMs = sub.submissionDate.getTime() - deadline.getTime();
+        sub.daysLate = diffMs > 0 ? Math.ceil(diffMs / 86400000) : 0;
+      }
+    }
+    markDirty();
+    renderTable();
+    if (state.selectedSubmissionId) renderDetail();
+  });
+
   document.getElementById("btn-add-item")?.addEventListener("click", () => {
     const item: FeedbackItem = { id: uid(), label: "", points: -1 };
     p.feedbackItems.push(item);
@@ -321,21 +433,44 @@ function bindSidebarEvents() {
     }
   });
 
-  // Blur on an empty label: silently remove the item
+  // Blur on an empty label: silently remove the item.
+  // We use a mousedown flag to reliably detect clicks into the detail panel,
+  // since relatedTarget can be null for checkboxes in some browsers.
+  let detailMousedownPending = false;
+  document.getElementById("detail-panel")?.addEventListener(
+    "mousedown",
+    () => {
+      detailMousedownPending = true;
+      // Reset after a short window — long enough for focusout to fire
+      setTimeout(() => {
+        detailMousedownPending = false;
+      }, 300);
+    },
+    true,
+  ); // capture phase so it fires before focusout
+
   list?.addEventListener("focusout", (e) => {
     const target = e.target as HTMLInputElement;
     if (!target.classList.contains("fi-label")) return;
     const id = target.dataset.id;
     if (!id) return;
     const item = p.feedbackItems.find((f) => f.id === id);
-    if (!item || item.label.trim()) return; // only delete if still empty
-    // Don't delete if focus is moving to another element within the same item
+    if (!item || item.label.trim()) return;
     const related = (e as FocusEvent).relatedTarget as HTMLElement | null;
-    if (related?.dataset.id === id) return;
-    p.feedbackItems = p.feedbackItems.filter((f) => f.id !== id);
-    markDirty();
-    renderSidebar();
-    renderDetail();
+    if (related?.dataset.id === id) return; // focus within same item
+    const doDelete = () => {
+      if (!p.feedbackItems.find((f) => f.id === id)) return;
+      if (p.feedbackItems.find((f) => f.id === id)?.label.trim()) return;
+      p.feedbackItems = p.feedbackItems.filter((f) => f.id !== id);
+      markDirty();
+      renderSidebar();
+      renderDetail();
+    };
+    if (detailMousedownPending) {
+      setTimeout(doDelete, 0);
+    } else {
+      doDelete();
+    }
   });
 
   list?.addEventListener("input", (e) => {
@@ -355,7 +490,6 @@ function bindSidebarEvents() {
     }
     markDirty();
     updateFeedbackCountBadge(id);
-    highlightTableRows();
     // Update every row that has this item applied
     for (const sub of p.submissions) {
       if (sub.appliedFeedback.some((af) => af.itemId === id)) {
@@ -395,17 +529,178 @@ function bindSidebarEvents() {
           (af) => af.itemId !== id,
         );
       }
-      if (state.highlightedItemId === id) state.highlightedItemId = null;
       markDirty();
       renderSidebar();
       renderTable();
       renderDetail();
     } else if (target.classList.contains("fi-count-btn")) {
-      state.highlightedItemId = state.highlightedItemId === id ? null : id;
-      renderSidebar();
-      highlightTableRows();
+      selectAffectedSubmissions(id);
     }
   });
+
+  // ── Drag-to-reorder and drag-to-apply ──
+  let dragReorderId: string | null = null;
+
+  list?.addEventListener("dragstart", (e) => {
+    const li = (e.target as HTMLElement).closest<HTMLElement>("li[data-id]");
+    if (!li) return;
+    const id = li.dataset.id!;
+    const fromHandle = (e.target as HTMLElement).classList.contains("fi-drag");
+
+    if (fromHandle) {
+      // Reorder mode
+      dragReorderId = id;
+      e.dataTransfer!.setData("text/reorder-id", id);
+      e.dataTransfer!.effectAllowed = "move";
+      li.classList.add("fi-dragging");
+    } else {
+      // Apply mode: drag onto a table row to apply this feedback
+      dragReorderId = null;
+      e.dataTransfer!.setData("text/feedback-id", id);
+      e.dataTransfer!.effectAllowed = "copy";
+      li.classList.add("fi-dragging");
+      // Signal table that a feedback drop is in flight
+      document
+        .getElementById("table-container")
+        ?.classList.add("table-drop-active");
+    }
+  });
+
+  list?.addEventListener("dragend", () => {
+    list
+      .querySelectorAll(".fi-dragging")
+      .forEach((el) => el.classList.remove("fi-dragging"));
+    list
+      .querySelectorAll(".fi-drag-over")
+      .forEach((el) => el.classList.remove("fi-drag-over"));
+    document
+      .getElementById("table-container")
+      ?.classList.remove("table-drop-active");
+    document
+      .querySelectorAll(".row-drop-target")
+      .forEach((el) => el.classList.remove("row-drop-target"));
+    dragReorderId = null;
+  });
+
+  list?.addEventListener("dragover", (e) => {
+    // Only handle reorder within list
+    if (!e.dataTransfer!.types.includes("text/reorder-id")) return;
+    e.preventDefault();
+    e.dataTransfer!.dropEffect = "move";
+    const li = (e.target as HTMLElement).closest<HTMLElement>("li[data-id]");
+    if (!li || li.dataset.id === dragReorderId) return;
+    list
+      .querySelectorAll(".fi-drag-over")
+      .forEach((el) => el.classList.remove("fi-drag-over"));
+    li.classList.add("fi-drag-over");
+  });
+
+  list?.addEventListener("drop", (e) => {
+    if (!e.dataTransfer!.types.includes("text/reorder-id")) return;
+    e.preventDefault();
+    const li = (e.target as HTMLElement).closest<HTMLElement>("li[data-id]");
+    if (!li || !dragReorderId || li.dataset.id === dragReorderId) return;
+    const targetId = li.dataset.id!;
+    const fromIdx = p.feedbackItems.findIndex((f) => f.id === dragReorderId);
+    const toIdx = p.feedbackItems.findIndex((f) => f.id === targetId);
+    if (fromIdx < 0 || toIdx < 0) return;
+    const [moved] = p.feedbackItems.splice(fromIdx, 1);
+    p.feedbackItems.splice(toIdx, 0, moved);
+    markDirty();
+    renderSidebar();
+    renderDetail();
+  });
+
+  // Table rows as drop targets for apply-feedback drags
+  const tableContainer = document.getElementById("table-container")!;
+
+  tableContainer.addEventListener("dragover", (e) => {
+    if (!e.dataTransfer!.types.includes("text/feedback-id")) return;
+    e.preventDefault();
+    e.dataTransfer!.dropEffect = "copy";
+    const row = (e.target as HTMLElement).closest<HTMLElement>(".sub-row");
+    document
+      .querySelectorAll(".row-drop-target")
+      .forEach((el) => el.classList.remove("row-drop-target"));
+    if (row) row.classList.add("row-drop-target");
+  });
+
+  tableContainer.addEventListener("dragleave", (e) => {
+    // Only clear if leaving the table container entirely
+    if (!tableContainer.contains(e.relatedTarget as Node)) {
+      document
+        .querySelectorAll(".row-drop-target")
+        .forEach((el) => el.classList.remove("row-drop-target"));
+    }
+  });
+
+  tableContainer.addEventListener("drop", (e) => {
+    e.preventDefault();
+    document
+      .querySelectorAll(".row-drop-target")
+      .forEach((el) => el.classList.remove("row-drop-target"));
+    document
+      .getElementById("table-container")
+      ?.classList.remove("table-drop-active");
+    const itemId = e.dataTransfer!.getData("text/feedback-id");
+    if (!itemId) return;
+    const row = (e.target as HTMLElement).closest<HTMLElement>(".sub-row");
+    if (!row) return;
+    const email = row.dataset.email!;
+    const sub = p.submissions.find((s) => s.email === email);
+    if (!sub) return;
+    const item = p.feedbackItems.find((f) => f.id === itemId);
+    if (!item?.label.trim()) return;
+    applyFeedbackItem(sub, itemId, p);
+    if (
+      state.selectedSubmissionId === email ||
+      state.selectedSubmissionIds.has(email)
+    ) {
+      renderDetail();
+    }
+  });
+}
+
+// ─── Feedback apply/remove helpers ───────────────────────────────────────────
+// Single source of truth for applying/removing a feedback item from a submission.
+
+function applyFeedbackItem(sub: Submission, itemId: string, p: Project) {
+  if (sub.appliedFeedback.some((af) => af.itemId === itemId)) return; // already applied
+  clearPerfect(sub);
+  sub.appliedFeedback.push({ itemId });
+  updateFeedbackCountBadge(itemId);
+  updateRow(sub, p);
+  markDirty();
+}
+
+function removeFeedbackItem(sub: Submission, itemId: string, p: Project) {
+  if (!sub.appliedFeedback.some((af) => af.itemId === itemId)) return; // not applied
+  sub.appliedFeedback = sub.appliedFeedback.filter(
+    (af) => af.itemId !== itemId,
+  );
+  updateFeedbackCountBadge(itemId);
+  updateRow(sub, p);
+  markDirty();
+}
+
+// Replace highlight-on-badge-click with select-affected-submissions
+function selectAffectedSubmissions(itemId: string) {
+  if (!state.project) return;
+  const affected = state.project.submissions
+    .filter((s) => s.appliedFeedback.some((af) => af.itemId === itemId))
+    .map((s) => s.email);
+  if (affected.length === 0) return;
+  state.selectedSubmissionIds = new Set(affected);
+  state.selectedSubmissionId = null;
+  state.lastClickedId = affected[affected.length - 1];
+  // Sync row selection classes
+  document.querySelectorAll<HTMLElement>(".sub-row").forEach((r) => {
+    r.classList.toggle(
+      "row-selected",
+      state.selectedSubmissionIds.has(r.dataset.email!),
+    );
+  });
+  renderDetail();
 }
 
 function updateFeedbackCountBadge(itemId: string) {
@@ -440,11 +735,16 @@ async function handleImportCSV() {
       const project = defaultProject();
       project.submissions = submissions;
       project.assignmentName = file.name.replace(/\.csv$/i, "");
+      // Default missing penalty to full max grade of the assignment
+      if (submissions.length > 0) {
+        project.autoTexts.missingPoints = -submissions[0].maxGrade;
+      }
       state.project = project;
       state.dirty = true;
       state.fileHandle = null;
       state.selectedSubmissionId = null;
-      state.highlightedItemId = null;
+      state.selectedSubmissionIds = new Set();
+      state.lastClickedId = null;
       saveToLocalStorage(project);
       render();
     } catch (err: any) {
@@ -462,10 +762,12 @@ async function handleLoadJSON() {
     const result = await loadFromFile();
     if (!result) return;
     state.project = result.project;
+    rehydrateDates(state.project);
     state.fileHandle = result.handle;
     state.dirty = false;
     state.selectedSubmissionId = null;
-    state.highlightedItemId = null;
+    state.selectedSubmissionIds = new Set();
+    state.lastClickedId = null;
     render();
   } catch (err: any) {
     alert("Failed to load: " + err.message);
@@ -517,6 +819,10 @@ function renderTable() {
   }
 
   const subs = sortedSubmissions();
+  const hasAnyDate = subs.some((s) => s.submissionDate);
+  const hasLatePolicy = p.latePolicy.type !== "none";
+  const hasAnyDaysLate = subs.some((s) => (s.daysLate ?? 0) > 0);
+  const showDateCol = hasAnyDate || hasLatePolicy || hasAnyDaysLate;
 
   const arrow = (key: string) =>
     state.sortKey === key
@@ -530,48 +836,80 @@ function renderTable() {
           <th class="sortable col-name" data-sort="name">Name ${arrow("name")}</th>
           <th class="sortable col-email" data-sort="email">Email ${arrow("email")}</th>
           <th class="col-grade">Grade</th>
+          ${showDateCol ? `<th class="col-date">Submitted</th>` : ""}
           <th class="col-summary">Feedback</th>
           <th class="col-status">Done</th>
         </tr>
       </thead>
       <tbody>
-        ${subs.map((sub) => renderRow(sub, p)).join("")}
+        ${subs.map((sub) => renderRow(sub, p, showDateCol)).join("")}
       </tbody>
     </table>
   `;
 
   bindTableEvents();
-  highlightTableRows();
 }
 
-function isGraded(sub: Submission): boolean {
-  return (
-    sub.appliedFeedback.length > 0 ||
-    sub.adHocFeedback.length > 0 ||
-    sub.manualGradeOverride !== undefined
-  );
+// Any grading action that isn't explicitly "mark perfect" should unmark it
+function clearPerfect(sub: Submission) {
+  sub.markedPerfect = false;
+}
+
+function isGraded(sub: Submission, p?: Project): boolean {
+  if (sub.markedPerfect) return true;
+  if (sub.appliedFeedback.length > 0) return true;
+  if (sub.adHocFeedback.some((ah) => ah.label.trim())) return true; // only non-empty
+  if (sub.manualGradeOverride !== undefined) return true;
+  if (
+    p &&
+    p.latePolicy.type !== "none" &&
+    (sub.daysLate ?? 0) > 0 &&
+    !sub.latePenaltyWaived
+  )
+    return true;
+  return false;
 }
 
 function rowStatus(
   sub: Submission,
-  _p: Project,
+  p: Project,
 ): { cls: string; label: string } {
-  if (isGraded(sub)) return { cls: "st-done", label: "✓" };
+  if (isGraded(sub, p)) return { cls: "st-done", label: "✓" };
   return { cls: "st-todo", label: "·" };
 }
 
-function renderRow(sub: Submission, p: Project): string {
+function renderRow(sub: Submission, p: Project, showDate = false): string {
   const grade = computeGrade(sub, p);
-  const isSelected = sub.email === state.selectedSubmissionId;
+  const isSelectedSingle = sub.email === state.selectedSubmissionId;
+  const isSelectedMulti = state.selectedSubmissionIds.has(sub.email);
+  const isSelected = isSelectedSingle || isSelectedMulti;
   const { cls, label } = rowStatus(sub, p);
-  const graded = isGraded(sub);
+  const graded = isGraded(sub, p);
   const summary = buildFeedbackSummary(sub, p);
+  const daysLate = sub.daysLate ?? 0;
+  const isLate = daysLate > 0 && !sub.latePenaltyWaived;
+
+  let dateCell = "";
+  if (showDate) {
+    if (sub.submissionDate) {
+      const fmt = sub.submissionDate.toLocaleDateString("en-US", {
+        month: "short",
+        day: "numeric",
+      });
+      dateCell = `<td class="cell-date ${isLate ? "cell-late" : ""}">${fmt}${daysLate > 0 ? ` <span class="late-days">(${daysLate}d)</span>` : ""}</td>`;
+    } else if (daysLate > 0) {
+      dateCell = `<td class="cell-date cell-late"><span class="late-days">${daysLate}d late</span></td>`;
+    } else {
+      dateCell = `<td class="cell-date"></td>`;
+    }
+  }
 
   return `<tr class="sub-row ${isSelected ? "row-selected" : ""} ${!graded ? "row-ungraded" : ""}"
       data-email="${esc(sub.email)}">
     <td class="cell-name">${esc(sub.fullName)}</td>
     <td class="cell-email">${esc(sub.email)}</td>
     <td class="cell-grade"><span class="grade-num">${fmtGrade(grade)}</span><span class="grade-max"> / ${sub.maxGrade}</span></td>
+    ${dateCell}
     <td class="cell-summary"><span class="summary-text">${esc(summary)}</span></td>
     <td class="cell-status"><span class="st-badge ${cls}">${label}</span></td>
   </tr>`;
@@ -581,12 +919,15 @@ function renderRow(sub: Submission, p: Project): string {
 function buildFeedbackSummary(sub: Submission, p: Project): string {
   const parts: string[] = [];
 
-  // Missing with no feedback applied
+  // Missing with no feedback applied and no late penalty (but not if explicitly marked perfect)
+  const latePts = computeLatePenalty(sub, p);
   if (
     sub.isMissing &&
+    !sub.markedPerfect &&
     sub.appliedFeedback.length === 0 &&
     sub.adHocFeedback.length === 0 &&
-    sub.manualGradeOverride === undefined
+    sub.manualGradeOverride === undefined &&
+    latePts === 0
   ) {
     return p.autoTexts.missing;
   }
@@ -602,13 +943,13 @@ function buildFeedbackSummary(sub: Submission, p: Project): string {
     if (ah.label) parts.push(ah.label);
   }
 
-  // Perfect: override at max with no other feedback
-  const grade = computeGrade(sub, p);
-  if (
-    parts.length === 0 &&
-    grade >= sub.maxGrade &&
-    sub.manualGradeOverride !== undefined
-  ) {
+  // Late penalty in table summary
+  if (latePts !== 0) {
+    parts.push(lateFeedbackLabel(sub, p));
+  }
+
+  // Perfect: only shown when explicitly marked
+  if (parts.length === 0 && sub.markedPerfect) {
     return p.autoTexts.perfect;
   }
 
@@ -616,8 +957,8 @@ function buildFeedbackSummary(sub: Submission, p: Project): string {
 }
 
 function fmtGrade(g: number): string {
-  // Always one decimal to prevent column width shifting
-  return Number.isInteger(g) ? g.toFixed(1) : g.toFixed(1);
+  // Always one decimal, rounded, to prevent column width shifting and floating point display
+  return parseFloat(g.toFixed(1)).toFixed(1);
 }
 
 function bindTableEvents() {
@@ -634,38 +975,195 @@ function bindTableEvents() {
     });
   });
 
-  document.querySelectorAll<HTMLElement>(".sub-row").forEach((row) => {
-    row.addEventListener("click", () => {
+  const rows = document.querySelectorAll<HTMLElement>(".sub-row");
+  const orderedEmails = Array.from(rows).map((r) => r.dataset.email!);
+
+  rows.forEach((row) => {
+    row.addEventListener("click", (e) => {
       const email = row.dataset.email!;
-      if (state.selectedSubmissionId === email) {
+      const isShift = (e as MouseEvent).shiftKey;
+      const isCtrl = (e as MouseEvent).ctrlKey || (e as MouseEvent).metaKey;
+
+      if (isShift && state.lastClickedId) {
+        // Range select from lastClickedId to this row
+        const a = orderedEmails.indexOf(state.lastClickedId);
+        const b = orderedEmails.indexOf(email);
+        const [lo, hi] = a < b ? [a, b] : [b, a];
+        for (let i = lo; i <= hi; i++)
+          state.selectedSubmissionIds.add(orderedEmails[i]);
         state.selectedSubmissionId = null;
+      } else if (isCtrl) {
+        // Toggle individual
+        if (state.selectedSubmissionIds.has(email)) {
+          state.selectedSubmissionIds.delete(email);
+        } else {
+          state.selectedSubmissionIds.add(email);
+          // Also absorb single-select into the set
+          if (state.selectedSubmissionId) {
+            state.selectedSubmissionIds.add(state.selectedSubmissionId);
+            state.selectedSubmissionId = null;
+          }
+        }
+        state.lastClickedId = email;
       } else {
-        state.selectedSubmissionId = email;
+        // Plain click: single select, clear multi
+        state.selectedSubmissionIds.clear();
+        if (state.selectedSubmissionId === email) {
+          state.selectedSubmissionId = null;
+          state.lastClickedId = null;
+        } else {
+          state.selectedSubmissionId = email;
+          state.lastClickedId = email;
+        }
       }
-      document
-        .querySelectorAll(".sub-row")
-        .forEach((r) => r.classList.remove("row-selected"));
-      if (state.selectedSubmissionId) row.classList.add("row-selected");
+
+      // Sync row highlight classes
+      document.querySelectorAll<HTMLElement>(".sub-row").forEach((r) => {
+        const em = r.dataset.email!;
+        const sel =
+          state.selectedSubmissionIds.has(em) ||
+          (!state.selectedSubmissionIds.size &&
+            state.selectedSubmissionId === em);
+        r.classList.toggle("row-selected", sel);
+      });
+
       renderDetail();
     });
-  });
-}
-
-function highlightTableRows() {
-  const hid = state.highlightedItemId;
-  document.querySelectorAll<HTMLElement>(".sub-row").forEach((row) => {
-    const sub = state.project?.submissions.find(
-      (s) => s.email === row.dataset.email,
-    );
-    const affected =
-      !!hid && !!sub?.appliedFeedback.some((af) => af.itemId === hid);
-    row.classList.toggle("row-highlight", affected);
   });
 }
 
 // ─── Detail panel ─────────────────────────────────────────────────────────────
 
 function renderDetail() {
+  if (state.selectedSubmissionIds.size > 1) {
+    renderGroupDetail();
+  } else {
+    renderSingleDetail();
+  }
+}
+
+function renderGroupDetail() {
+  const el = document.getElementById("detail-panel")!;
+  const p = state.project!;
+  const emails = Array.from(state.selectedSubmissionIds);
+  const subs = emails
+    .map((em) => p.submissions.find((s) => s.email === em)!)
+    .filter(Boolean);
+
+  el.innerHTML = `
+    <div class="detail-hdr">
+      <div class="detail-name">${subs.length} submissions selected</div>
+      <button class="btn-icon close-detail" title="Clear selection">×</button>
+    </div>
+
+    <div class="group-names">
+      ${subs.map((s) => `<span class="group-name-tag">${esc(s.fullName)}</span>`).join("")}
+    </div>
+
+    <div class="grade-row">
+      <div class="grade-label">Group actions</div>
+      <div class="grade-controls">
+        <button class="btn-perfect-action" id="btn-group-perfect">★ Mark perfect</button>
+        <button class="btn-clear-action" id="btn-group-clear">✕ Clear all</button>
+      </div>
+    </div>
+
+    <div class="detail-section">
+      <div class="detail-sub">
+        Apply feedback
+        <span class="detail-sub-hint">— changes apply to all selected</span>
+      </div>
+      <ul class="detail-fi-list" id="group-fi-list">
+        ${(() => {
+          const labelled = p.feedbackItems.filter((item) => item.label.trim());
+          if (labelled.length === 0)
+            return `<li class="detail-empty-hint">No reusable feedback defined yet.</li>`;
+          return labelled.map((item) => renderGroupFI(item, subs)).join("");
+        })()}
+      </ul>
+    </div>
+  `;
+
+  bindGroupDetailEvents(subs, p);
+}
+
+function renderGroupFI(item: FeedbackItem, subs: Submission[]): string {
+  const appliedCount = subs.filter((s) =>
+    s.appliedFeedback.some((af) => af.itemId === item.id),
+  ).length;
+  const allApplied = appliedCount === subs.length;
+  const someApplied = appliedCount > 0 && !allApplied;
+
+  return `<li class="dfi ${allApplied ? "dfi-applied" : someApplied ? "dfi-mixed" : ""}" data-id="${item.id}">
+    <input type="checkbox" class="gfi-check" data-id="${item.id}"
+      ${allApplied ? "checked" : ""} ${someApplied ? 'data-indeterminate="true"' : ""} />
+    <span class="gfi-label">${esc(item.label)}</span>
+    <span class="gfi-pts">${fmtPts(item.points)}</span>
+    <span class="gfi-count">${appliedCount}/${subs.length}</span>
+  </li>`;
+}
+
+function bindGroupDetailEvents(subs: Submission[], p: Project) {
+  document.querySelector(".close-detail")?.addEventListener("click", () => {
+    state.selectedSubmissionIds.clear();
+    state.selectedSubmissionId = null;
+    state.lastClickedId = null;
+    document
+      .querySelectorAll(".sub-row")
+      .forEach((r) => r.classList.remove("row-selected"));
+    renderDetail();
+  });
+
+  document
+    .getElementById("btn-group-perfect")
+    ?.addEventListener("click", () => {
+      for (const sub of subs) {
+        sub.appliedFeedback = [];
+        sub.adHocFeedback = [];
+        delete sub.manualGradeOverride;
+        sub.daysLate = 0;
+        sub.latePenaltyWaived = false;
+        sub.markedPerfect = true;
+        updateRow(sub, p);
+      }
+      markDirty();
+      renderGroupDetail();
+    });
+
+  document.getElementById("btn-group-clear")?.addEventListener("click", () => {
+    for (const sub of subs) {
+      sub.appliedFeedback = [];
+      sub.adHocFeedback = [];
+      delete sub.manualGradeOverride;
+      sub.markedPerfect = false;
+      updateRow(sub, p);
+    }
+    markDirty();
+    renderGroupDetail();
+  });
+
+  // Set indeterminate state on mixed checkboxes (can't do in HTML)
+  document
+    .querySelectorAll<HTMLInputElement>(".gfi-check[data-indeterminate]")
+    .forEach((cb) => {
+      cb.indeterminate = true;
+    });
+
+  const fiList = document.getElementById("group-fi-list");
+  fiList?.addEventListener("change", (e) => {
+    const t = e.target as HTMLInputElement;
+    if (!t.classList.contains("gfi-check")) return;
+    const id = t.dataset.id!;
+    if (t.checked) {
+      for (const sub of subs) applyFeedbackItem(sub, id, p);
+    } else {
+      for (const sub of subs) removeFeedbackItem(sub, id, p);
+    }
+    renderGroupDetail();
+  });
+}
+
+function renderSingleDetail() {
   const el = document.getElementById("detail-panel")!;
   const p = state.project;
   if (!p || !state.selectedSubmissionId) {
@@ -680,6 +1178,9 @@ function renderDetail() {
 
   const grade = computeGrade(sub, p);
   const isOverride = sub.manualGradeOverride !== undefined;
+  const lp = p.latePolicy;
+  const latePts = computeLatePenalty(sub, p);
+  const hasDate = !!sub.submissionDate;
 
   el.innerHTML = `
     <div class="detail-hdr">
@@ -693,7 +1194,7 @@ function renderDetail() {
     <div class="grade-row">
       <div class="grade-label">Grade</div>
       <div class="grade-controls">
-        <span class="grade-big ${isOverride ? "grade-overridden" : ""}" id="grade-display">${fmtGrade(grade)}</span>
+        <span class="grade-big ${isOverride ? "grade-overridden" : sub.markedPerfect ? "grade-perfect" : ""}" id="grade-display">${fmtGrade(grade)}</span>
         <span class="grade-max-detail"> / ${sub.maxGrade}</span>
         <input type="number" id="manual-grade" class="pts-input manual-grade-input"
           value="${isOverride ? sub.manualGradeOverride : fmtGrade(grade)}"
@@ -701,10 +1202,36 @@ function renderDetail() {
         <button class="btn-icon grade-lock-btn" id="btn-grade-lock"
           title="${isOverride ? "Revert to computed grade" : "Set grade manually"}"
         >${isOverride ? "🔓" : "🔒"}</button>
-        <button class="btn-text" id="btn-perfect" title="Assign full marks with perfect auto-text">✓ Perfect</button>
+        <button class="${sub.markedPerfect ? "btn-perfect-active" : "btn-perfect-action"}" id="btn-perfect"
+          title="${sub.markedPerfect ? "Unmark perfect" : "Mark as full credit"}"
+        >${sub.markedPerfect ? "★ Perfect" : "★ Mark perfect"}</button>
       </div>
       ${isOverride ? `<div class="override-note">Manual override active</div>` : ""}
+      ${sub.markedPerfect && !isOverride ? `<div class="perfect-note">Marked perfect — ${esc(p.autoTexts.perfect)}</div>` : ""}
     </div>
+
+    ${
+      lp.type !== "none"
+        ? `
+    <div class="detail-section late-row-section">
+      <div class="detail-sub">Late penalty</div>
+      <div class="late-controls">
+        ${
+          hasDate
+            ? `<span class="late-info">Submitted ${sub.submissionDate!.toLocaleDateString("en-US", { month: "short", day: "numeric" })}</span>`
+            : ""
+        }
+        <label class="late-days-label">Days late:</label>
+        <input type="number" id="days-late" class="pts-input" value="${sub.daysLate ?? 0}" min="0" step="1" ${hasDate ? "disabled" : ""} />
+        ${latePts !== 0 ? `<span class="late-penalty-amt">${fmtPts(latePts)}</span>` : '<span class="late-penalty-amt late-none">on time</span>'}
+        <label class="inline-check late-waive">
+          <input type="checkbox" id="waive-late" ${sub.latePenaltyWaived ? "checked" : ""} /> waive
+        </label>
+      </div>
+    </div>
+    `
+        : ""
+    }
 
     <div class="detail-section">
       <div class="detail-sub">
@@ -772,17 +1299,51 @@ function renderAdHoc(ah: AdHocEntry): string {
 function bindDetailEvents(sub: Submission, p: Project) {
   document.querySelector(".close-detail")?.addEventListener("click", () => {
     state.selectedSubmissionId = null;
+    state.selectedSubmissionIds.clear();
+    state.lastClickedId = null;
     document
       .querySelectorAll(".sub-row")
       .forEach((r) => r.classList.remove("row-selected"));
     renderDetail();
   });
 
+  // Days-late manual input (only active when no parsed date)
+  (document.getElementById("days-late") as HTMLInputElement)?.addEventListener(
+    "input",
+    (e) => {
+      clearPerfect(sub);
+      sub.daysLate = parseInt((e.target as HTMLInputElement).value) || 0;
+      markDirty();
+      refreshGrade(sub, p);
+      updateRow(sub, p);
+      refreshPreview(sub, p);
+      // Update penalty display
+      const amt = document.querySelector(".late-penalty-amt");
+      if (amt) {
+        const pts = computeLatePenalty(sub, p);
+        amt.textContent = pts !== 0 ? fmtPts(pts) : "on time";
+        amt.className = `late-penalty-amt${pts === 0 ? " late-none" : ""}`;
+      }
+    },
+  );
+
+  (document.getElementById("waive-late") as HTMLInputElement)?.addEventListener(
+    "change",
+    (e) => {
+      clearPerfect(sub);
+      sub.latePenaltyWaived = (e.target as HTMLInputElement).checked;
+      markDirty();
+      renderSingleDetail();
+      updateRow(sub, p);
+    },
+  );
+
   // Lock/unlock grade
   document.getElementById("btn-grade-lock")?.addEventListener("click", () => {
     if (sub.manualGradeOverride !== undefined) {
       delete sub.manualGradeOverride;
     } else {
+      clearPerfect(sub);
       sub.manualGradeOverride = computeGrade(sub, p);
     }
     markDirty();
@@ -790,12 +1351,18 @@ function bindDetailEvents(sub: Submission, p: Project) {
     updateRow(sub, p);
   });
 
-  // Perfect score shortcut
+  // Perfect score toggle
   document.getElementById("btn-perfect")?.addEventListener("click", () => {
-    // Clear any applied feedback so the perfect auto-text shows cleanly
-    sub.appliedFeedback = [];
-    sub.adHocFeedback = [];
-    sub.manualGradeOverride = sub.maxGrade;
+    if (sub.markedPerfect) {
+      sub.markedPerfect = false;
+    } else {
+      sub.appliedFeedback = [];
+      sub.adHocFeedback = [];
+      delete sub.manualGradeOverride;
+      sub.daysLate = 0;
+      sub.latePenaltyWaived = false;
+      sub.markedPerfect = true;
+    }
     markDirty();
     renderDetail();
     updateRow(sub, p);
@@ -804,6 +1371,7 @@ function bindDetailEvents(sub: Submission, p: Project) {
   (
     document.getElementById("manual-grade") as HTMLInputElement
   )?.addEventListener("input", (e) => {
+    clearPerfect(sub);
     sub.manualGradeOverride = parseFloat((e.target as HTMLInputElement).value);
     markDirty();
     refreshGrade(sub, p);
@@ -818,15 +1386,10 @@ function bindDetailEvents(sub: Submission, p: Project) {
     if (!t.classList.contains("dfi-check")) return;
     const id = t.dataset.id!;
     if (t.checked) {
-      sub.appliedFeedback.push({ itemId: id });
+      applyFeedbackItem(sub, id, p);
     } else {
-      sub.appliedFeedback = sub.appliedFeedback.filter(
-        (af) => af.itemId !== id,
-      );
+      removeFeedbackItem(sub, id, p);
     }
-    markDirty();
-    updateFeedbackCountBadge(id);
-    highlightTableRows();
     renderDetail();
     updateRow(sub, p);
   });
@@ -896,11 +1459,30 @@ function bindDetailEvents(sub: Submission, p: Project) {
     const ah = sub.adHocFeedback.find((a) => a.id === ahid);
     if (!ah) return;
     if (t.classList.contains("ah-pts")) ah.points = parseFloat(t.value) || 0;
-    if (t.classList.contains("ah-lbl")) ah.label = t.value;
+    if (t.classList.contains("ah-lbl")) {
+      ah.label = t.value;
+      if (ah.label.trim()) clearPerfect(sub); // only clear perfect once something is typed
+    }
     markDirty();
     refreshGrade(sub, p);
     updateRow(sub, p);
     refreshPreview(sub, p);
+  });
+
+  ahList?.addEventListener("focusout", (e) => {
+    const target = e.target as HTMLInputElement;
+    if (!target.classList.contains("ah-lbl")) return;
+    const ahid = target.dataset.ahid;
+    if (!ahid) return;
+    const ah = sub.adHocFeedback.find((a) => a.id === ahid);
+    if (!ah || ah.label.trim()) return;
+    // Remove empty entry when focus leaves (unless staying within same item)
+    const related = (e as FocusEvent).relatedTarget as HTMLElement | null;
+    if (related?.dataset.ahid === ahid) return;
+    sub.adHocFeedback = sub.adHocFeedback.filter((a) => a.id !== ahid);
+    markDirty();
+    renderDetail();
+    updateRow(sub, p);
   });
 
   ahList?.addEventListener("click", (e) => {
@@ -926,9 +1508,10 @@ function refreshGrade(sub: Submission, p: Project) {
 }
 
 function fmtPts(pts: number): string {
-  if (pts > 0) return `+${pts % 1 === 0 ? pts.toFixed(1) : pts}`;
-  if (pts === 0) return "0";
-  return pts % 1 === 0 ? pts.toFixed(1) : String(pts);
+  const rounded = parseFloat(pts.toFixed(1));
+  if (rounded > 0) return `+${rounded.toFixed(1)}`;
+  if (rounded === 0) return "0";
+  return rounded.toFixed(1);
 }
 
 function renderFeedbackSummaryList(sub: Submission, p: Project): string {
@@ -936,9 +1519,11 @@ function renderFeedbackSummaryList(sub: Submission, p: Project): string {
 
   if (
     sub.isMissing &&
+    !sub.markedPerfect &&
     sub.appliedFeedback.length === 0 &&
     sub.adHocFeedback.length === 0 &&
-    sub.manualGradeOverride === undefined
+    sub.manualGradeOverride === undefined &&
+    computeLatePenalty(sub, p) === 0
   ) {
     items.push({
       pts: p.autoTexts.missingPoints,
@@ -958,9 +1543,17 @@ function renderFeedbackSummaryList(sub: Submission, p: Project): string {
     for (const ah of sub.adHocFeedback) {
       items.push({ pts: ah.points, label: ah.label, positive: ah.points > 0 });
     }
-    // Perfect auto-text: shown when grade equals max and no other feedback
-    const grade = computeGrade(sub, p);
-    if (items.length === 0 && grade >= sub.maxGrade) {
+    // Late penalty
+    const latePts = computeLatePenalty(sub, p);
+    if (latePts !== 0) {
+      items.push({
+        pts: latePts,
+        label: lateFeedbackLabel(sub, p),
+        positive: false,
+      });
+    }
+    // Perfect auto-text: only shown when explicitly marked, not inferred from grade
+    if (items.length === 0 && sub.markedPerfect) {
       items.push({ pts: 0, label: p.autoTexts.perfect, positive: false });
     }
   }
@@ -1008,7 +1601,11 @@ function updateRow(sub: Submission, p: Project) {
     badge.className = `st-badge ${cls}`;
     badge.textContent = label;
   }
-  row.classList.toggle("row-ungraded", !isGraded(sub));
+  row.classList.toggle("row-ungraded", !isGraded(sub, p));
+  const isSelected =
+    sub.email === state.selectedSubmissionId ||
+    state.selectedSubmissionIds.has(sub.email);
+  row.classList.toggle("row-selected", isSelected);
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -1029,6 +1626,10 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
     <div class="resize-handle" id="resize-left" title="Drag to resize"></div>
     <main id="main">
       <div id="table-container"></div>
+      <footer id="footer">
+        <a href="https://github.com/adambyle/grader" target="_blank" rel="noopener">github.com/adambyle/grader</a>
+        <span>© ${new Date().getFullYear()} Adam Byle</span>
+      </footer>
     </main>
     <div class="resize-handle" id="resize-right" title="Drag to resize"></div>
     <section id="detail-panel"></section>
@@ -1104,6 +1705,27 @@ function initResizeHandles() {
       savedDetail + "px",
     );
 }
+
+// ─── Global keyboard shortcuts ────────────────────────────────────────────────
+
+document.addEventListener("keydown", (e) => {
+  // Ctrl/Cmd+S: save
+  if ((e.ctrlKey || e.metaKey) && e.key === "s") {
+    e.preventDefault();
+    if (state.project) handleSaveJSON();
+    return;
+  }
+  if (e.key !== "Escape") return;
+  const active = document.activeElement as HTMLElement | null;
+  if (
+    active &&
+    (active.tagName === "INPUT" ||
+      active.tagName === "TEXTAREA" ||
+      active.tagName === "SELECT")
+  ) {
+    active.blur();
+  }
+});
 
 initResizeHandles();
 render();
