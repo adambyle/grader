@@ -332,19 +332,31 @@ function bindSidebarEvents() {
     p.autoTexts.missingPoints =
       parseFloat((e.target as HTMLInputElement).value) || 0;
     markDirty();
+    // Missing points affect grade, so re-render full table; also refresh open detail
     renderTable();
+    if (state.selectedSubmissionId) renderDetail();
   });
   (
     document.getElementById("at-missing-label") as HTMLInputElement
   )?.addEventListener("input", (e) => {
     p.autoTexts.missing = (e.target as HTMLInputElement).value;
     markDirty();
+    // Update summary column for all missing/ungraded submissions
+    for (const sub of p.submissions) {
+      if (sub.isMissing) updateRow(sub, p);
+    }
+    if (state.selectedSubmissionId) renderDetail();
   });
   (
     document.getElementById("at-perfect-label") as HTMLInputElement
   )?.addEventListener("input", (e) => {
     p.autoTexts.perfect = (e.target as HTMLInputElement).value;
     markDirty();
+    // Update summary column for all marked-perfect submissions
+    for (const sub of p.submissions) {
+      if (sub.markedPerfect) updateRow(sub, p);
+    }
+    if (state.selectedSubmissionId) renderDetail();
   });
 
   // Late policy
