@@ -162,10 +162,10 @@ export function lateFeedbackLabel(sub: Submission, project: Project): string {
   const days = sub.daysLate ?? 0;
   const dayStr = `${days} day${days !== 1 ? "s" : ""} late`;
   if (lp.type === "percent-per-day") {
-    const pct = lp.amount * days;
+    const pct = parseFloat((lp.amount * days).toFixed(1));
     return `${dayStr} (-${pct}%)`;
   } else if (lp.type === "flat-per-day") {
-    const pts = lp.amount * days;
+    const pts = parseFloat((lp.amount * days).toFixed(1));
     return `${dayStr} (-${pts} pts)`;
   } else if (lp.type === "zero-if-late") {
     return "Late submission";
@@ -229,6 +229,11 @@ export function computeGrade(sub: Submission, project: Project): number {
   return Math.max(0, grade);
 }
 
+// Format a number to exactly 1 decimal place for CSV output
+function fmt1(n: number): string {
+  return parseFloat(n.toFixed(1)).toFixed(1);
+}
+
 // Build the feedback comment string for a submission (matching output format)
 export function buildFeedbackComment(
   sub: Submission,
@@ -248,8 +253,11 @@ export function buildFeedbackComment(
     !hasLatePenalty
   ) {
     const delta = grade - sub.maxGrade;
-    const deltaStr = delta === 0 ? "0" : delta.toString();
-    parts.push(`${deltaStr}: ${project.autoTexts.missing}`);
+    parts.push(
+      delta === 0
+        ? project.autoTexts.missing
+        : `${fmt1(delta)}: ${project.autoTexts.missing}`,
+    );
   } else {
     for (const af of sub.appliedFeedback) {
       const item = project.feedbackItems.find((f) => f.id === af.itemId);
@@ -258,17 +266,18 @@ export function buildFeedbackComment(
         af.pointsOverride !== undefined ? af.pointsOverride : item.points;
       const label =
         af.labelOverride !== undefined ? af.labelOverride : item.label;
-      parts.push(pts === 0 ? label : `${pts}: ${label}`);
+      parts.push(pts === 0 ? label : `${fmt1(pts)}: ${label}`);
     }
     for (const ah of sub.adHocFeedback) {
       if (!ah.label.trim()) continue;
-      parts.push(ah.points === 0 ? ah.label : `${ah.points}: ${ah.label}`);
+      parts.push(
+        ah.points === 0 ? ah.label : `${fmt1(ah.points)}: ${ah.label}`,
+      );
     }
     // Late penalty entry
     const latePts = computeLatePenalty(sub, project);
     if (latePts !== 0 && !sub.latePenaltyWaived) {
-      const lateLabel = lateFeedbackLabel(sub, project);
-      parts.push(`${latePts}: ${lateLabel}`);
+      parts.push(`${fmt1(latePts)}: ${lateFeedbackLabel(sub, project)}`);
     }
     // Perfect auto-text: only when explicitly marked
     if (sub.markedPerfect && parts.length === 0) {
@@ -302,7 +311,7 @@ export function exportCSV(project: Project): string {
       sub.idNumber,
       sub.email,
       "No submission - Graded -  - ",
-      grade.toString(),
+      fmt1(grade),
       sub.maxGrade.toString(),
       "Yes",
       sub.submissionDate
