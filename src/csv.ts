@@ -331,14 +331,17 @@ export function exportCSV(project: Project): string {
   }
 
   return rows
-    .map((row) =>
+    .map((row, ri) =>
       row
-        .map((cell) => {
+        .map((cell, ci) => {
+          // Always quote the feedback comments column (last col, data rows only)
+          // to prevent Moodle from prepending a ' to values starting with - or =
+          const forceQuote = ri > 0 && ci === row.length - 1;
           if (
+            forceQuote ||
             cell.includes(",") ||
             cell.includes('"') ||
-            cell.includes("\n") ||
-            cell.includes("'")
+            cell.includes("\n")
           ) {
             return '"' + cell.replace(/"/g, '""') + '"';
           }
